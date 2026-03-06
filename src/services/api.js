@@ -175,10 +175,41 @@ export async function fetchPeopleClusters(scope = 'all') {
 }
 
 /**
- * Get map markers built from image EXIF GPS metadata.
+ * Poll people-scan progress.
+ * @returns {Promise<{status: string, total: number, processed: number, updated_at: string}>}
+ */
+export async function fetchPeopleScanStatus() {
+	const { data } = await axios.get(url('/people/scan/status'))
+	return data
+}
+
+/**
+ * Get cached map markers from the database.
  * @returns {Promise<{markers: Array, total_markers: number, total_photos_with_location: number}>}
  */
 export async function fetchLocationMarkers(scope = 'all') {
 	const { data } = await axios.get(url('/locations/markers'), { params: { scope } })
+	return data
+}
+
+/**
+ * Trigger a location scan — extracts GPS coordinates from EXIF metadata
+ * and caches the results in the database.
+ * @param {boolean} force Re-extract even if already cached
+ * @returns {Promise<{total: number, scanned: number, skipped: number, with_location: number, errors: number}>}
+ */
+export async function triggerLocationScan(force = false) {
+	const { data } = await axios.post(url('/locations/scan'), null, {
+		params: { force: force ? 'true' : 'false' },
+	})
+	return data
+}
+
+/**
+ * Poll location-scan progress.
+ * @returns {Promise<{status: string, total: number, processed: number, updated_at: string}>}
+ */
+export async function fetchLocationScanStatus() {
+	const { data } = await axios.get(url('/locations/scan/status'))
 	return data
 }

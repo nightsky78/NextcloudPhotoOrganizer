@@ -34,7 +34,10 @@ return [
         ['name' => 'classifier_api#deleteClassifiedFile',   'url' => '/api/v1/classify/files/{fileId}', 'verb' => 'DELETE'],
 
         // ── People & location insights ───────────────────────────────
-        ['name' => 'insights_api#peopleClusters',           'url' => '/api/v1/people/clusters',         'verb' => 'GET'],
-        ['name' => 'insights_api#locationMarkers',          'url' => '/api/v1/locations/markers',       'verb' => 'GET'],
+        ['name' => 'insights_api#peopleClusters',           'url' => '/api/v1/people/clusters',              'verb' => 'GET'],
+        ['name' => 'insights_api#peopleScanStatus',         'url' => '/api/v1/people/scan/status',           'verb' => 'GET'],
+        ['name' => 'insights_api#locationMarkers',          'url' => '/api/v1/locations/markers',            'verb' => 'GET'],
+        ['name' => 'insights_api#locationScan',             'url' => '/api/v1/locations/scan',               'verb' => 'POST'],
+        ['name' => 'insights_api#locationScanStatus',       'url' => '/api/v1/locations/scan/status',        'verb' => 'GET'],
     ],
 ];

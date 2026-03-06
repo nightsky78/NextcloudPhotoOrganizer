@@ -2,6 +2,28 @@
 
 All notable changes to the **Photo Deduplicator** Nextcloud app are documented here.
 
+## [1.4.0] — 2026-03-06
+
+### Added
+
+- **Location scan button**: GPS extraction is now triggered on demand from the Locations tab instead of running on every page load.
+- **Location scan progress bar**: real-time progress indicator during scanning.
+- **Database-backed location cache**: extracted GPS coordinates are stored in a new `pdd_file_locations` table and loaded instantly on page load.
+- **Incremental location scanning**: only new or modified files are processed; previously scanned files (including those without GPS data) are remembered and skipped.
+- New REST endpoints: `POST /api/v1/locations/scan` and `GET /api/v1/locations/scan/status`.
+- New database migration, entity (`FileLocation`), and mapper (`FileLocationMapper`).
+- Comprehensive unit tests for location scan service and controller endpoints.
+
+### Changed
+
+- Location markers are now read from the database cache instead of live EXIF extraction, eliminating the previous 20s+ latency for large libraries.
+- Removed `insights_location_max_runtime_seconds` and `insights_location_exif_read_bytes` app config keys (no longer needed).
+
+### Fixed
+
+- Fixed `compact()` variable name mismatch (`with_location` vs `$withLocation`) in scan result reporting.
+- Fixed EXIF extraction aborting entirely when a file exceeded the byte-read limit, instead of reading GPS data from the already-copied header bytes. This caused all JPEG files larger than ~2 MB to be incorrectly recorded as having no GPS coordinates.
+
 ## [1.3.1] — 2026-03-06
 
 ### Changed

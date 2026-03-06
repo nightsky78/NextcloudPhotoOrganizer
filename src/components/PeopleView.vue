@@ -33,10 +33,20 @@
 			<p>Loading face clusters…</p>
 		</div>
 
+		<div v-else-if="scanStatus === 'scanning'" class="people__scanning">
+			<NcLoadingIcon :size="44" />
+			<p>People scan in progress…</p>
+			<p v-if="scanTotal > 0" class="people__scan-progress">
+				{{ scanProcessed }} / {{ scanTotal }} files processed
+			</p>
+		</div>
+
 		<div v-else-if="clusters.length === 0" class="people__empty">
 			<div class="people__empty-icon">👤</div>
 			<h3>No people clusters yet</h3>
-			<p>Only photos with detected faces are grouped in this view.</p>
+			<p>Run the people scan from the server command line to detect faces:</p>
+			<code class="people__cli-hint">occ photodedup:scan-people --all</code>
+			<p class="people__cli-sub">This can be automated via a cron job or systemd service.</p>
 		</div>
 
 		<div v-else class="people__clusters">
@@ -63,6 +73,7 @@ import NcLoadingIcon from '@nextcloud/vue/dist/Components/NcLoadingIcon.js'
 
 import {
 	fetchPeopleClusters,
+	fetchPeopleScanStatus,
 	previewUrl,
 } from '../services/api.js'
 
@@ -86,6 +97,10 @@ export default {
 			loading: true,
 			clusters: [],
 			totalFaceImages: 0,
+			scanStatus: 'idle',
+			scanTotal: 0,
+			scanProcessed: 0,
+			pollTimer: null,
 		}
 	},
 
@@ -100,6 +115,11 @@ export default {
 
 	async created() {
 		await this.loadClusters()
+		await this.checkScanStatus()
+	},
+
+	beforeDestroy() {
+		this.stopPolling()
 	},
 
 	methods: {
@@ -129,6 +149,47 @@ export default {
 				this.totalFaceImages = 0
 			} finally {
 				this.loading = false
+			}
+		},
+
+		async checkScanStatus() {
+			try {
+				const status = await fetchPeopleScanStatus()
+				this.scanStatus = status.status || 'idle'
+				this.scanTotal = status.total || 0
+				this.scanProcessed = status.processed || 0
+
+				if (this.scanStatus === 'scanning') {
+					this.startPolling()
+				}
+			} catch {
+				// Ignore — endpoint may not exist yet
+			}
+		},
+
+		startPolling() {
+			this.stopPolling()
+			this.pollTimer = setInterval(async () => {
+				try {
+					const status = await fetchPeopleScanStatus()
+					this.scanStatus = status.status || 'idle'
+					this.scanTotal = status.total || 0
+					this.scanProcessed = status.processed || 0
+
+					if (this.scanStatus !== 'scanning') {
+						this.stopPolling()
+						await this.loadClusters()
+					}
+				} catch {
+					this.stopPolling()
+				}
+			}, 3000)
+		},
+
+		stopPolling() {
+			if (this.pollTimer) {
+				clearInterval(this.pollTimer)
+				this.pollTimer = null
 			}
 		},
 	},
@@ -200,6 +261,7 @@ export default {
 }
 
 .people__loading,
+.people__scanning,
 .people__empty {
 	display: flex;
 	flex-direction: column;
@@ -211,6 +273,28 @@ export default {
 
 .people__empty-icon {
 	font-size: 2rem;
+}
+
+.people__scan-progress {
+	font-size: 0.9em;
+	color: var(--color-text-maxcontrast);
+}
+
+.people__cli-hint {
+	display: inline-block;
+	background: var(--color-background-dark);
+	color: var(--color-main-text);
+	padding: 8px 16px;
+	border-radius: var(--border-radius);
+	font-family: monospace;
+	font-size: 0.9em;
+	user-select: all;
+}
+
+.people__cli-sub {
+	font-size: 0.85em;
+	color: var(--color-text-maxcontrast);
+	margin-top: 4px;
 }
 
 .people__clusters {

@@ -66,6 +66,7 @@ blob-report/
 coverage/
 .nyc_output/
 tmp-*.png
+tests/
 
 copilot-instructions.md
 config.py

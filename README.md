@@ -1,7 +1,7 @@
 # Photo Organizer for Nextcloud
 
-> Version **1.2.3**  
-> Duplicate detection + local AI-powered image classification
+> Version **1.4.0**  
+> Duplicate detection + local AI-powered image classification + location insights
 
 Photo Organizer helps you clean up large photo libraries in Nextcloud by combining two workflows:
 
@@ -130,7 +130,12 @@ php occ upgrade
    - Click **Classify images**.
    - Review grouped categories.
    - Move or delete selected files.
-4. Use the **scope toggle** in both tabs:
+4. In **Locations**:
+   - Click **Scan locations** to extract GPS data from EXIF metadata.
+   - A progress bar shows scan status.
+   - Markers appear on the map, grouped by proximity.
+   - Subsequent scans are incremental (only new/changed files are processed).
+5. Use the **scope toggle** in both tabs:
    - **Whole drive** for complete view.
    - **Photos folder** for `Photos/`-only workflows.
 
@@ -212,6 +217,16 @@ php occ config:app:set photodedup ml_classifier_timeout_seconds --value=20
 php occ config:app:set photodedup ml_classifier_max_file_bytes --value=12582912
 php occ config:app:set photodedup ml_classifier_min_confidence --value=0.15
 php occ config:app:set photodedup ml_classifier_retries --value=1
+
+# People insights tuning
+php occ config:app:set photodedup insights_people_max_file_bytes --value=52428800
+php occ config:app:set photodedup insights_people_min_face_confidence --value=0.35
+php occ config:app:set photodedup insights_people_require_family_category --value=true
+php occ config:app:set photodedup insights_people_min_family_confidence --value=0.20
+
+# Location insights
+# Location data is now cached in the database and scanned on demand.
+# No runtime tuning needed — scan progress is shown in the UI.
 ```
 
 Optional auth token:
