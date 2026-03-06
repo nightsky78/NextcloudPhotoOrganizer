@@ -50,11 +50,13 @@ class InsightsApiControllerTest extends TestCase
         $user->method('getUID')->willReturn('alice');
 
         $this->userSession->method('getUser')->willReturn($user);
+        $this->request->method('getParam')
+            ->willReturnCallback(static fn (string $key, mixed $default = null): mixed => $default);
 
         $result = ['clusters' => [], 'total_clusters' => 0, 'total_face_images' => 0];
         $this->peopleLocationService->expects($this->once())
             ->method('getPeopleClusters')
-            ->with('alice', 'photos')
+            ->with('alice', 'photos', 10, 50)
             ->willReturn($result);
 
         $controller = $this->createController();
@@ -95,6 +97,173 @@ class InsightsApiControllerTest extends TestCase
 
         $this->assertSame(Http::STATUS_OK, $response->getStatus());
         $this->assertSame($progress, $response->getData());
+    }
+
+    // ── peopleClusterFiles ─────────────────────────────────────────
+
+    public function testPeopleClusterFilesReturnsUnauthorizedWhenNoUser(): void
+    {
+        $this->userSession->expects($this->once())
+            ->method('getUser')
+            ->willReturn(null);
+
+        $controller = $this->createController();
+        $response = $controller->peopleClusterFiles();
+
+        $this->assertSame(Http::STATUS_UNAUTHORIZED, $response->getStatus());
+    }
+
+    public function testPeopleClusterFilesReturnsBadRequestWhenPersonAndSignaturesMissing(): void
+    {
+        $user = $this->createMock(IUser::class);
+        $user->method('getUID')->willReturn('alice');
+        $this->userSession->method('getUser')->willReturn($user);
+
+        $this->request->method('getParam')
+            ->willReturnCallback(static fn (string $key, mixed $default = null): mixed => match ($key) {
+                'signatures' => [],
+                default => $default,
+            });
+
+        $controller = $this->createController();
+        $response = $controller->peopleClusterFiles();
+
+        $this->assertSame(Http::STATUS_BAD_REQUEST, $response->getStatus());
+        $this->assertSame(['error' => 'Missing person or signatures'], $response->getData());
+    }
+
+    public function testPeopleClusterFilesDelegatesToServiceByPerson(): void
+    {
+        $user = $this->createMock(IUser::class);
+        $user->method('getUID')->willReturn('alice');
+        $this->userSession->method('getUser')->willReturn($user);
+
+        $this->request->method('getParam')
+            ->willReturnCallback(static fn (string $key, mixed $default = null): mixed => match ($key) {
+                'scope' => 'photos',
+                'offset' => 100,
+                'limit' => 50,
+                'person' => 'alice-person',
+                default => $default,
+            });
+
+        $result = [
+            'files' => [
+                ['fileId' => 2, 'filePath' => 'Photos/b.jpg', 'mimeType' => 'image/jpeg', 'fileSize' => 1100, 'faceConfidence' => 0.93],
+            ],
+            'total' => 120,
+            'offset' => 100,
+            'limit' => 50,
+            'has_more' => false,
+            'next_offset' => 120,
+        ];
+
+        $this->peopleLocationService->expects($this->once())
+            ->method('getPeopleClusterFilesByPerson')
+            ->with('alice', 'alice-person', 'photos', 100, 50)
+            ->willReturn($result);
+
+        $controller = $this->createController();
+        $response = $controller->peopleClusterFiles();
+
+        $this->assertSame(Http::STATUS_OK, $response->getStatus());
+        $this->assertSame($result, $response->getData());
+    }
+
+    public function testPeopleClusterFilesDelegatesToService(): void
+    {
+        $user = $this->createMock(IUser::class);
+        $user->method('getUID')->willReturn('alice');
+        $this->userSession->method('getUser')->willReturn($user);
+
+        $this->request->method('getParam')
+            ->willReturnCallback(static fn (string $key, mixed $default = null): mixed => match ($key) {
+                'scope' => 'photos',
+                'offset' => 50,
+                'limit' => 50,
+                'signatures' => ['emb:v1:a', 'emb:v1:b'],
+                default => $default,
+            });
+
+        $result = [
+            'files' => [
+                ['fileId' => 1, 'filePath' => 'Photos/a.jpg', 'mimeType' => 'image/jpeg', 'fileSize' => 1000, 'faceConfidence' => 0.91],
+            ],
+            'total' => 75,
+            'offset' => 50,
+            'limit' => 50,
+            'has_more' => false,
+            'next_offset' => 75,
+        ];
+
+        $this->peopleLocationService->expects($this->once())
+            ->method('getPeopleClusterFiles')
+            ->with('alice', ['emb:v1:a', 'emb:v1:b'], 'photos', 50, 50)
+            ->willReturn($result);
+
+        $controller = $this->createController();
+        $response = $controller->peopleClusterFiles();
+
+        $this->assertSame(Http::STATUS_OK, $response->getStatus());
+        $this->assertSame($result, $response->getData());
+    }
+
+    // ── setPeopleLabel ─────────────────────────────────────────────
+
+    public function testSetPeopleLabelReturnsUnauthorizedWhenNoUser(): void
+    {
+        $this->userSession->expects($this->once())
+            ->method('getUser')
+            ->willReturn(null);
+
+        $controller = $this->createController();
+        $response = $controller->setPeopleLabel();
+
+        $this->assertSame(Http::STATUS_UNAUTHORIZED, $response->getStatus());
+    }
+
+    public function testSetPeopleLabelReturnsBadRequestWhenMissingSignature(): void
+    {
+        $user = $this->createMock(IUser::class);
+        $user->method('getUID')->willReturn('alice');
+        $this->userSession->method('getUser')->willReturn($user);
+
+        $this->request->method('getParam')
+            ->willReturnCallback(static fn (string $key, mixed $default = null): mixed => match ($key) {
+                'signature' => '',
+                'label' => 'Alice',
+                default => $default,
+            });
+
+        $controller = $this->createController();
+        $response = $controller->setPeopleLabel();
+
+        $this->assertSame(Http::STATUS_BAD_REQUEST, $response->getStatus());
+        $this->assertSame(['error' => 'Missing signature'], $response->getData());
+    }
+
+    public function testSetPeopleLabelDelegatesToService(): void
+    {
+        $user = $this->createMock(IUser::class);
+        $user->method('getUID')->willReturn('alice');
+        $this->userSession->method('getUser')->willReturn($user);
+
+        $this->request->method('getParam')
+            ->willReturnCallback(static fn (string $key, mixed $default = null): mixed => match ($key) {
+                'signature' => 'emb:v1:abc',
+                'label' => 'Alice',
+                default => $default,
+            });
+
+        $this->peopleLocationService->expects($this->once())
+            ->method('setFaceSignatureLabel')
+            ->with('alice', 'emb:v1:abc', 'Alice');
+
+        $controller = $this->createController();
+        $response = $controller->setPeopleLabel();
+
+        $this->assertSame(Http::STATUS_OK, $response->getStatus());
+        $this->assertSame(['success' => true], $response->getData());
     }
 
     // ── locationMarkers ─────────────────────────────────────────────

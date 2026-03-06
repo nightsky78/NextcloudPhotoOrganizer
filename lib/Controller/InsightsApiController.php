@@ -38,7 +38,68 @@ class InsightsApiController extends Controller
             return new JSONResponse(['error' => 'Not authenticated'], Http::STATUS_UNAUTHORIZED);
         }
 
-        $result = $this->peopleLocationService->getPeopleClusters($user->getUID(), $scope);
+        $clusterLimit = max(1, min(50, (int) $this->request->getParam('clusterLimit', 10)));
+        $fileLimit = max(1, min(200, (int) $this->request->getParam('fileLimit', 50)));
+
+        $result = $this->peopleLocationService->getPeopleClusters($user->getUID(), $scope, $clusterLimit, $fileLimit);
+        return new JSONResponse($result);
+    }
+
+    /**
+     * @NoAdminRequired
+     */
+    public function peopleClusterFiles(): JSONResponse
+    {
+        $user = $this->userSession->getUser();
+        if ($user === null) {
+            return new JSONResponse(['error' => 'Not authenticated'], Http::STATUS_UNAUTHORIZED);
+        }
+
+        $scope = trim((string) $this->request->getParam('scope', 'all'));
+        $offset = max(0, (int) $this->request->getParam('offset', 0));
+        $limit = max(1, min(200, (int) $this->request->getParam('limit', 50)));
+        $person = trim((string) $this->request->getParam('person', ''));
+
+        if ($person !== '') {
+            $result = $this->peopleLocationService->getPeopleClusterFilesByPerson(
+                $user->getUID(),
+                $person,
+                $scope,
+                $offset,
+                $limit,
+            );
+
+            return new JSONResponse($result);
+        }
+
+        $rawSignatures = $this->request->getParam('signatures', []);
+
+        if (!is_array($rawSignatures)) {
+            return new JSONResponse(['error' => 'Invalid signatures payload'], Http::STATUS_BAD_REQUEST);
+        }
+
+        $signatures = [];
+        foreach ($rawSignatures as $signature) {
+            $trimmed = trim((string) $signature);
+            if ($trimmed === '') {
+                continue;
+            }
+
+            $signatures[] = $trimmed;
+        }
+
+        if ($signatures === []) {
+            return new JSONResponse(['error' => 'Missing person or signatures'], Http::STATUS_BAD_REQUEST);
+        }
+
+        $result = $this->peopleLocationService->getPeopleClusterFiles(
+            $user->getUID(),
+            $signatures,
+            $scope,
+            $offset,
+            $limit,
+        );
+
         return new JSONResponse($result);
     }
 
@@ -57,6 +118,27 @@ class InsightsApiController extends Controller
         return new JSONResponse(
             $this->peopleLocationService->getPeopleScanProgress($user->getUID()),
         );
+    }
+
+    /**
+     * @NoAdminRequired
+     */
+    public function setPeopleLabel(): JSONResponse
+    {
+        $user = $this->userSession->getUser();
+        if ($user === null) {
+            return new JSONResponse(['error' => 'Not authenticated'], Http::STATUS_UNAUTHORIZED);
+        }
+
+        $signature = trim((string) $this->request->getParam('signature', ''));
+        if ($signature === '') {
+            return new JSONResponse(['error' => 'Missing signature'], Http::STATUS_BAD_REQUEST);
+        }
+
+        $label = trim((string) $this->request->getParam('label', ''));
+        $this->peopleLocationService->setFaceSignatureLabel($user->getUID(), $signature, $label);
+
+        return new JSONResponse(['success' => true]);
     }
 
     /**

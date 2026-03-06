@@ -169,8 +169,39 @@ export async function deleteClassifiedFile(fileId) {
  * Get person clusters (face-only image groups).
  * @returns {Promise<{clusters: Array, total_clusters: number, total_face_images: number}>}
  */
-export async function fetchPeopleClusters(scope = 'all') {
-	const { data } = await axios.get(url('/people/clusters'), { params: { scope } })
+export async function fetchPeopleClusters(scope = 'all', clusterLimit = 10, fileLimit = 50) {
+	const { data } = await axios.get(url('/people/clusters'), {
+		params: { scope, clusterLimit, fileLimit },
+	})
+	return data
+}
+
+/**
+ * Load additional files for a single people cluster.
+ * @param {{ person?: string, signatures?: string[] }} payload
+ * @param {string} scope
+ * @param {number} offset
+ * @param {number} limit
+ * @returns {Promise<{files: Array, total: number, offset: number, limit: number, has_more: boolean, next_offset: number}>}
+ */
+export async function fetchPeopleClusterFiles(payload = {}, scope = 'all', offset = 0, limit = 50) {
+	const requestPayload = {
+		scope,
+		offset,
+		limit,
+	}
+
+	if (typeof payload.person === 'string' && payload.person.trim() !== '') {
+		requestPayload.person = payload.person.trim()
+	}
+
+	if (Array.isArray(payload.signatures) && payload.signatures.length > 0) {
+		requestPayload.signatures = payload.signatures
+	}
+
+	const { data } = await axios.post(url('/people/cluster/files'), {
+		...requestPayload,
+	})
 	return data
 }
 
@@ -180,6 +211,20 @@ export async function fetchPeopleClusters(scope = 'all') {
  */
 export async function fetchPeopleScanStatus() {
 	const { data } = await axios.get(url('/people/scan/status'))
+	return data
+}
+
+/**
+ * Set or clear the label of a people cluster signature.
+ * @param {string} signature
+ * @param {string} label
+ * @returns {Promise<{success: boolean}>}
+ */
+export async function setPeopleClusterLabel(signature, label) {
+	const { data } = await axios.post(url('/people/label'), {
+		signature,
+		label,
+	})
 	return data
 }
 

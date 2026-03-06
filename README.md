@@ -1,6 +1,6 @@
 # Photo Organizer for Nextcloud
 
-> Version **1.4.0**  
+> Version **1.5.0**  
 > Duplicate detection + local AI-powered image classification + location insights
 
 Photo Organizer helps you clean up large photo libraries in Nextcloud by combining two workflows:
@@ -23,7 +23,7 @@ It is designed to be safe, auditable, and practical for self-hosted environments
 
 ## Feature overview
 
-### Deduplicator
+### Deduplicator function
 
 - Content-based duplicate detection (SHA-256).
 - Streaming hash computation (8 MiB chunks) for stable memory usage.
@@ -32,7 +32,7 @@ It is designed to be safe, auditable, and practical for self-hosted environments
 - Real-time index maintenance via file event listeners.
 - Scheduled background scan and stale index cleanup.
 
-### Classifier
+### Classifier function
 
 - Local ML-first classification via HTTP worker.
 - Automatic fallback to heuristics if ML is unavailable or unsuitable.
@@ -155,6 +155,40 @@ php occ upgrade
 
 The app supports a local worker in `ml_worker/`.
 
+### Machine learning functions
+
+The ML worker provides two production endpoints and one health endpoint:
+
+- `GET /health`
+  - Liveness and model metadata.
+- `POST /classify`
+  - Zero-shot image classification across app categories (`document`, `meme`, `nature`, `family`, `object`).
+  - Returns best category, confidence, model id, algorithm version, and top prompt-level labels.
+- `POST /face-signature`
+  - Face detection plus deterministic face signatures used by People insights.
+  - Returns `has_face`, `face_count`, primary signature/confidence, and per-face signatures.
+
+Classifier pipeline (`/classify`):
+
+1. Request auth check (`Bearer` token optional, required when configured).
+2. Image safety checks (non-empty, max bytes).
+3. EXIF-aware normalization (`ImageOps.exif_transpose`) and RGB conversion.
+4. Optional resize to max dimension.
+5. Prompt expansion from category prompt map.
+6. Zero-shot inference (Transformers pipeline).
+7. Per-category confidence aggregation and top-category selection.
+
+Face-signature pipeline (`/face-signature`):
+
+1. Same auth + input safety preprocessing.
+2. Face detection (YuNet preferred, Haar cascade fallback).
+3. Per-face embedding/signature generation:
+   - SFace embedding if available.
+   - CLIP image embedding fallback.
+   - Perceptual hash fallback for degraded cases.
+4. Signature normalization/quantization to `emb:v1:` compact representation.
+5. Confidence computation using face area + detector score.
+
 ### Worker API contract
 
 - `GET /health`
@@ -168,11 +202,40 @@ Expected response:
 {
   "category": "nature",
   "confidence": 0.91,
-  "model": "openai/clip-vit-base-patch32",
-  "algorithm_version": "2026-03-02-local-ai-v2",
+  "model": "openai/clip-vit-large-patch14",
+  "algorithm_version": "2026-03-02-local-ai-v1",
   "labels": [
     {"name":"a_nature_landscape","score":0.91,"category":"nature"}
   ]
+}
+```
+
+- `POST /face-signature` (`multipart/form-data`)
+  - `file`: image bytes
+
+Expected response (face found):
+
+```json
+{
+  "has_face": true,
+  "face_count": 2,
+  "signature": "emb:v1:...",
+  "confidence": 0.94,
+  "faces": [
+    {"face_index":1,"signature":"emb:v1:...","confidence":0.94},
+    {"face_index":2,"signature":"emb:v1:...","confidence":0.78}
+  ],
+  "algorithm_version": "2026-03-02-local-ai-v1"
+}
+```
+
+Expected response (no face found):
+
+```json
+{
+  "has_face": false,
+  "face_count": 0,
+  "algorithm_version": "2026-03-02-local-ai-v1"
 }
 ```
 
@@ -194,9 +257,18 @@ Recommended environment variables:
 - `ML_WORKER_MODEL` (default: `openai/clip-vit-large-patch14`)
 - `ML_WORKER_MAX_IMAGE_BYTES` (default: `12582912`)
 - `ML_WORKER_MAX_DIMENSION` (default: `2048`)
+- `ML_WORKER_TOP_PROMPTS_PER_CATEGORY` (default: `2`)
 - `ML_WORKER_CONFIDENCE_BIAS` (default: `1.0`)
-- `ML_WORKER_ALGORITHM_VERSION` (default: `2026-03-02-local-ai-v2`)
+- `ML_WORKER_ALGORITHM_VERSION` (default: `2026-03-02-local-ai-v1`)
 - `ML_WORKER_TOKEN` (optional bearer token)
+- `ML_WORKER_EMBEDDING_DIMS` (default: `128`, min `32`, max `128`)
+- `ML_WORKER_MODEL_CACHE_DIR` (default: `/tmp/ml_worker_models`)
+- `ML_WORKER_YUNET_MODEL_URL` (YuNet detector model URL)
+- `ML_WORKER_SFACE_MODEL_URL` (SFace recognizer model URL)
+- `ML_WORKER_YUNET_SCORE_THRESHOLD` (default: `0.90`)
+- `ML_WORKER_YUNET_NMS_THRESHOLD` (default: `0.30`)
+- `ML_WORKER_YUNET_TOP_K` (default: `5000`)
+- `ML_WORKER_MIN_FACE_SIZE` (default: `48`, minimum `24`)
 
 ### Python venv deployment
 
@@ -257,6 +329,15 @@ php occ photodedup:scan --force johannes
 ### Validation checks
 
 ```bash
+# App is enabled
+php occ app:list | grep photodedup
+
+# ML endpoint reachable from Nextcloud runtime
+docker exec nextcloud-app php -r 'echo file_get_contents("http://photodedup-ml-worker:8008/health");'
+
+# Recent worker activity
+docker logs --tail 50 photodedup-ml-worker
+```
 
 ### Playwright E2E tests
 
@@ -285,15 +366,6 @@ npm run e2e
 ```
 
 The tests are non-destructive by default and validate login plus Duplicates/Classifier/People/Locations tab behavior.
-# App is enabled
-php occ app:list | grep photodedup
-
-# ML endpoint reachable from Nextcloud runtime
-docker exec nextcloud-app php -r 'echo file_get_contents("http://photodedup-ml-worker:8008/health");'
-
-# Recent worker activity
-docker logs --tail 50 photodedup-ml-worker
-```
 
 ---
 
@@ -362,7 +434,7 @@ Key layers:
 
 Before publishing/releasing:
 
-1. Bump `appinfo/info.xml` version.
+1. Bump versions consistently in `appinfo/info.xml`, `package.json`, `package-lock.json`, `CHANGELOG.md`, and README.
 2. Build frontend (`make build`) and verify assets updated.
 3. Run PHP syntax checks and lint/tests.
 4. Validate app install/upgrade on a clean Nextcloud instance.

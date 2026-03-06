@@ -2,6 +2,29 @@
 
 All notable changes to the **Photo Deduplicator** Nextcloud app are documented here.
 
+## [1.5.0] — 2026-03-06
+
+### Added
+
+- People insights now support a strict reference-first onboarding flow: when no person references exist, the People tab focuses on the reference candidate list for creating persons.
+- Added explicit single-face-only reference candidate handling for safer person bootstrap.
+
+### Changed
+
+- Removed legacy signature-distance fallback clustering from People insights; clustering is now based on labeled person references only.
+- Updated README machine-learning documentation with endpoint contracts, pipeline details, environment configuration, and operational validation commands.
+
+### Fixed
+
+- Cleaned up unused legacy people-clustering code paths to prevent accidental reactivation.
+- Corrected and clarified README operations/validation formatting.
+
+## [1.4.1] — 2026-03-06
+
+### Fixed
+
+- Aligned release version metadata to `1.4.1` across `appinfo/info.xml`, `package.json`, `package-lock.json`, and README.
+
 ## [1.4.0] — 2026-03-06
 
 ### Added

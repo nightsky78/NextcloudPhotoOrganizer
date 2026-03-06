@@ -9,6 +9,9 @@ namespace OCA\PhotoDedup\Service;
 
 use DateTime;
 use OCA\PhotoDedup\AppInfo\Application;
+use OCA\PhotoDedup\Db\FaceInstance;
+use OCA\PhotoDedup\Db\FaceInstanceMapper;
+use OCA\PhotoDedup\Db\FaceSignatureLabelMapper;
 use OCA\PhotoDedup\Db\FileFace;
 use OCA\PhotoDedup\Db\FileFaceMapper;
 use OCA\PhotoDedup\Db\FileLocation;
@@ -25,8 +28,10 @@ class PeopleLocationService
 {
     private const SCOPE_ALL = 'all';
     private const SCOPE_PHOTOS = 'photos';
-    private const FACE_CLUSTER_DISTANCE = 8;
+    private const FACE_EMBEDDING_SIGNATURE_PREFIX = 'emb:v1:';
     private const MAX_CLUSTER_SIGNATURES = 24;
+    private const PEOPLE_DEFAULT_CLUSTER_LIMIT = 10;
+    private const PEOPLE_DEFAULT_FILES_PER_CLUSTER = 50;
     private const FACE_SUPPORTED_MIME_TYPES = [
         'image/jpeg',
         'image/png',
@@ -36,10 +41,14 @@ class PeopleLocationService
         'image/tiff',
     ];
     private const LOCATION_DEFAULT_EXIF_READ_BYTES = 2097152;
+    private const PEOPLE_PROGRESS_WRITE_EVERY = 5;
+    private const PEOPLE_SCAN_STALE_SECONDS = 180;
 
     public function __construct(
         private readonly IRootFolder $rootFolder,
         private readonly FileFaceMapper $fileFaceMapper,
+        private readonly FaceInstanceMapper $faceInstanceMapper,
+        private readonly FaceSignatureLabelMapper $faceSignatureLabelMapper,
         private readonly FileLocationMapper $fileLocationMapper,
         private readonly IConfig $config,
         private readonly LoggerInterface $logger,
@@ -52,70 +61,575 @@ class PeopleLocationService
      * Face signatures stored in pdd_file_faces are clustered in memory using
      * hex hamming distance.  No ML worker calls happen at read time.
      *
-     * @return array{clusters: array<int, array>, total_clusters: int, total_face_images: int}
+    * @return array{clusters: array<int, array>, total_clusters: int, total_face_images: int, cluster_limit: int, files_per_cluster: int, reference_candidates: array<int, array>}
      */
-    public function getPeopleClusters(string $userId, string $scope = self::SCOPE_ALL): array
+    public function getPeopleClusters(
+        string $userId,
+        string $scope = self::SCOPE_ALL,
+        int $clusterLimit = self::PEOPLE_DEFAULT_CLUSTER_LIMIT,
+        int $filesPerCluster = self::PEOPLE_DEFAULT_FILES_PER_CLUSTER,
+    ): array
     {
         $scope = $this->normalizeScope($scope);
+        $clusterLimit = max(1, min(50, $clusterLimit));
+        $filesPerCluster = max(1, min(200, $filesPerCluster));
 
-        $faceRecords = $this->fileFaceMapper->findWithFace($userId, $scope);
+        $instanceRecords = $this->faceInstanceMapper->findWithFace($userId, $scope);
 
-        $clusters = [];
-        $faceImages = 0;
+        $labelMap = $this->faceSignatureLabelMapper->getLabelMapForUser($userId);
 
-        foreach ($faceRecords as $record) {
-            $signature = $record->getFaceSignature();
-            if ($signature === null || trim($signature) === '') {
+        $uniqueFaceImageKeys = [];
+        $fileFaceCounts = [];
+        foreach ($instanceRecords as $record) {
+            $uniqueFaceImageKeys[$record->getFileId() . ':' . $record->getFilePath()] = true;
+
+            $recordSignature = trim((string) ($record->getFaceSignature() ?? ''));
+            if ($recordSignature === '') {
                 continue;
             }
 
-            $faceImages++;
+            $recordFileId = $record->getFileId();
+            $fileFaceCounts[$recordFileId] = ($fileFaceCounts[$recordFileId] ?? 0) + 1;
+        }
 
-            $entry = [
-                'fileId' => $record->getFileId(),
+        $referenceCandidates = $this->buildReferenceCandidates($instanceRecords, $fileFaceCounts, 120);
+        $labelMap = $this->filterLabelMapToSingleFaceReferences($labelMap, $instanceRecords, $fileFaceCounts);
+        $referenceProfiles = $this->buildReferenceProfilesFromLabels($labelMap);
+
+        if ($referenceProfiles === []) {
+            return [
+                'clusters' => [],
+                'total_clusters' => 0,
+                'total_face_images' => count($uniqueFaceImageKeys),
+                'cluster_limit' => $clusterLimit,
+                'files_per_cluster' => $filesPerCluster,
+                'reference_candidates' => $referenceCandidates,
+            ];
+        }
+
+        $clusters = $this->buildReferenceClusters($instanceRecords, $referenceProfiles, $filesPerCluster);
+        $totalClusters = count($clusters);
+        $clusters = array_slice($clusters, 0, $clusterLimit);
+
+        return [
+            'clusters' => $clusters,
+            'total_clusters' => $totalClusters,
+            'total_face_images' => count($uniqueFaceImageKeys),
+            'cluster_limit' => $clusterLimit,
+            'files_per_cluster' => $filesPerCluster,
+            'reference_candidates' => $referenceCandidates,
+        ];
+    }
+
+    /**
+     * @param array<int, FaceInstance> $instanceRecords
+     * @param array<int, int> $fileFaceCounts
+     * @return array<int, array<string, mixed>>
+     */
+    private function buildReferenceCandidates(array $instanceRecords, array $fileFaceCounts, int $limit): array
+    {
+        $limit = max(1, min(300, $limit));
+
+        $bestBySignature = [];
+        foreach ($instanceRecords as $record) {
+            $signature = trim((string) ($record->getFaceSignature() ?? ''));
+            if ($signature === '') {
+                continue;
+            }
+
+            $fileId = $record->getFileId();
+            if (($fileFaceCounts[$fileId] ?? 0) !== 1) {
+                continue;
+            }
+
+            $candidate = [
+                'fileId' => $fileId,
                 'filePath' => $record->getFilePath(),
                 'mimeType' => $record->getMimeType(),
                 'fileSize' => $record->getFileSize(),
                 'faceConfidence' => $record->getFaceConfidence() !== null ? (float) $record->getFaceConfidence() : 0.0,
+                'faceSignature' => $signature,
+                'faceCountInFile' => 1,
             ];
 
-            $clusterIndex = $this->findClusterIndex($clusters, $signature);
-            if ($clusterIndex === -1) {
-                $clusters[] = [
-                    'signature' => $signature,
-                    'signatures' => [$signature],
-                    'files' => [$entry],
-                ];
-            } else {
-                $clusters[$clusterIndex]['files'][] = $entry;
-                if (!isset($clusters[$clusterIndex]['signatures']) || !is_array($clusters[$clusterIndex]['signatures'])) {
-                    $clusters[$clusterIndex]['signatures'] = [(string) $clusters[$clusterIndex]['signature']];
-                }
-                if (count($clusters[$clusterIndex]['signatures']) < self::MAX_CLUSTER_SIGNATURES && !in_array($signature, $clusters[$clusterIndex]['signatures'], true)) {
-                    $clusters[$clusterIndex]['signatures'][] = $signature;
-                }
+            $existing = $bestBySignature[$signature] ?? null;
+            if ($existing === null || (float) ($candidate['faceConfidence'] ?? 0.0) > (float) ($existing['faceConfidence'] ?? 0.0)) {
+                $bestBySignature[$signature] = $candidate;
             }
         }
 
-        $normalized = [];
-        $index = 1;
-        foreach ($clusters as $cluster) {
-            usort($cluster['files'], static fn(array $a, array $b): int => $b['fileSize'] <=> $a['fileSize']);
-            $normalized[] = [
-                'id' => 'person-' . $index,
-                'name' => 'Person ' . $index,
-                'count' => count($cluster['files']),
-                'files' => $cluster['files'],
-            ];
-            $index++;
+        $candidates = array_values($bestBySignature);
+        usort(
+            $candidates,
+            static fn(array $a, array $b): int => ((float) ($b['faceConfidence'] ?? 0.0) <=> (float) ($a['faceConfidence'] ?? 0.0))
+                ?: ((int) ($b['fileSize'] ?? 0) <=> (int) ($a['fileSize'] ?? 0))
+                ?: ((int) ($a['fileId'] ?? 0) <=> (int) ($b['fileId'] ?? 0))
+        );
+
+        return array_slice($candidates, 0, $limit);
+    }
+
+    /**
+     * @param array<string, string> $labelMap
+     * @param array<int, FaceInstance> $instanceRecords
+     * @param array<int, int> $fileFaceCounts
+     * @return array<string, string>
+     */
+    private function filterLabelMapToSingleFaceReferences(array $labelMap, array $instanceRecords, array $fileFaceCounts): array
+    {
+        if ($labelMap === [] || $instanceRecords === []) {
+            return [];
         }
 
-        usort($normalized, static fn(array $a, array $b): int => $b['count'] <=> $a['count']);
+        $eligibleSignatures = [];
+        foreach ($instanceRecords as $record) {
+            $signature = trim((string) ($record->getFaceSignature() ?? ''));
+            if ($signature === '') {
+                continue;
+            }
+
+            $fileId = $record->getFileId();
+            if (($fileFaceCounts[$fileId] ?? 0) !== 1) {
+                continue;
+            }
+
+            $eligibleSignatures[$signature] = true;
+        }
+
+        $filtered = [];
+        foreach ($labelMap as $signature => $label) {
+            $signature = trim((string) $signature);
+            $label = trim((string) $label);
+            if ($signature === '' || $label === '') {
+                continue;
+            }
+
+            if (!isset($eligibleSignatures[$signature])) {
+                continue;
+            }
+
+            $filtered[$signature] = $label;
+        }
+
+        return $filtered;
+    }
+
+    public function setFaceSignatureLabel(string $userId, string $faceSignature, string $labelName): void
+    {
+        $signature = trim($faceSignature);
+        if ($signature === '') {
+            return;
+        }
+
+        $this->faceSignatureLabelMapper->setLabel($userId, $signature, $labelName);
+    }
+
+    /**
+     * @param array<string, string> $labelMap
+     * @return array<string, array{vector: array<float>, reference_signatures: array<int, string>}>
+     */
+    private function buildReferenceProfilesFromLabels(array $labelMap): array
+    {
+        $vectorsByPerson = [];
+        $signaturesByPerson = [];
+
+        foreach ($labelMap as $signature => $label) {
+            $person = trim((string) $label);
+            if ($person === '') {
+                continue;
+            }
+
+            $vector = $this->parseEmbeddingSignature((string) $signature);
+            if ($vector === null) {
+                continue;
+            }
+
+            if (!isset($vectorsByPerson[$person])) {
+                $vectorsByPerson[$person] = [];
+            }
+            if (!isset($signaturesByPerson[$person])) {
+                $signaturesByPerson[$person] = [];
+            }
+
+            $vectorsByPerson[$person][] = $vector;
+            $signaturesByPerson[$person][] = (string) $signature;
+        }
+
+        $profiles = [];
+        foreach ($vectorsByPerson as $person => $vectors) {
+            if ($vectors === []) {
+                continue;
+            }
+
+            $dimension = count($vectors[0]);
+            if ($dimension === 0) {
+                continue;
+            }
+
+            $sum = array_fill(0, $dimension, 0.0);
+            foreach ($vectors as $vector) {
+                if (count($vector) !== $dimension) {
+                    continue;
+                }
+
+                for ($i = 0; $i < $dimension; $i++) {
+                    $sum[$i] += (float) $vector[$i];
+                }
+            }
+
+            $count = count($vectors);
+            if ($count <= 0) {
+                continue;
+            }
+
+            $centroid = [];
+            for ($i = 0; $i < $dimension; $i++) {
+                $centroid[$i] = $sum[$i] / $count;
+            }
+
+            $normSquared = 0.0;
+            foreach ($centroid as $value) {
+                $normSquared += $value * $value;
+            }
+
+            if ($normSquared <= 0.0) {
+                continue;
+            }
+
+            $norm = sqrt($normSquared);
+            foreach ($centroid as $index => $value) {
+                $centroid[$index] = $value / $norm;
+            }
+
+            $profiles[$person] = [
+                'vector' => $centroid,
+                'reference_signatures' => array_values(array_unique($signaturesByPerson[$person] ?? [], SORT_STRING)),
+            ];
+        }
+
+        return $profiles;
+    }
+
+    /**
+     * @param array<int, FaceInstance> $instanceRecords
+     * @param array<string, array{vector: array<float>, reference_signatures: array<int, string>}> $profiles
+     * @return array<int, array<string, mixed>>
+     */
+    private function buildReferenceClusters(array $instanceRecords, array $profiles, int $filesPerCluster): array
+    {
+        $minSimilarity = max(0.5, min(0.99, (float) $this->config->getAppValue(Application::APP_ID, 'insights_people_reference_min_similarity', '0.74')));
+        $minMargin = max(0.0, min(0.2, (float) $this->config->getAppValue(Application::APP_ID, 'insights_people_reference_min_margin', '0.01')));
+
+        $fileFaceCounts = [];
+        foreach ($instanceRecords as $record) {
+            $recordSignature = trim((string) ($record->getFaceSignature() ?? ''));
+            if ($recordSignature === '') {
+                continue;
+            }
+
+            $recordFileId = $record->getFileId();
+            $fileFaceCounts[$recordFileId] = ($fileFaceCounts[$recordFileId] ?? 0) + 1;
+        }
+
+        $buckets = [];
+        $personByReferenceSignature = [];
+        foreach ($profiles as $person => $profile) {
+            $buckets[$person] = [
+                'name' => $person,
+                'person_key' => $person,
+                'reference_signatures' => $profile['reference_signatures'],
+                'filesById' => [],
+            ];
+
+            foreach ($profile['reference_signatures'] as $referenceSignature) {
+                $referenceSignature = trim((string) $referenceSignature);
+                if ($referenceSignature === '') {
+                    continue;
+                }
+
+                $personByReferenceSignature[$referenceSignature] = $person;
+            }
+        }
+
+        foreach ($instanceRecords as $record) {
+            $signature = trim((string) ($record->getFaceSignature() ?? ''));
+            if ($signature === '') {
+                continue;
+            }
+
+            $mappedReferencePerson = $personByReferenceSignature[$signature] ?? null;
+            if (is_string($mappedReferencePerson) && isset($profiles[$mappedReferencePerson])) {
+                $fileId = $record->getFileId();
+                $entry = [
+                    'fileId' => $fileId,
+                    'filePath' => $record->getFilePath(),
+                    'mimeType' => $record->getMimeType(),
+                    'fileSize' => $record->getFileSize(),
+                    'faceConfidence' => $record->getFaceConfidence() !== null ? (float) $record->getFaceConfidence() : 0.0,
+                    'faceSignature' => $signature,
+                    'faceCountInFile' => (int) ($fileFaceCounts[$fileId] ?? 1),
+                    'matchScore' => 1.0,
+                ];
+
+                $existing = $buckets[$mappedReferencePerson]['filesById'][$fileId] ?? null;
+                if ($existing === null || (float) ($entry['matchScore'] ?? 0.0) > (float) ($existing['matchScore'] ?? 0.0)) {
+                    $buckets[$mappedReferencePerson]['filesById'][$fileId] = $entry;
+                }
+
+                continue;
+            }
+
+            $embedding = $this->parseEmbeddingSignature($signature);
+            if ($embedding === null) {
+                continue;
+            }
+
+            $bestPerson = null;
+            $bestScore = -1.0;
+            $secondScore = -1.0;
+
+            foreach ($profiles as $person => $profile) {
+                $score = $this->cosineSimilarity($embedding, $profile['vector']);
+                if ($score > $bestScore) {
+                    $secondScore = $bestScore;
+                    $bestScore = $score;
+                    $bestPerson = $person;
+                } elseif ($score > $secondScore) {
+                    $secondScore = $score;
+                }
+            }
+
+            if ($bestPerson === null || $bestScore < $minSimilarity || ($bestScore - max($secondScore, -1.0)) < $minMargin) {
+                continue;
+            }
+
+            $fileId = $record->getFileId();
+            $entry = [
+                'fileId' => $fileId,
+                'filePath' => $record->getFilePath(),
+                'mimeType' => $record->getMimeType(),
+                'fileSize' => $record->getFileSize(),
+                'faceConfidence' => $record->getFaceConfidence() !== null ? (float) $record->getFaceConfidence() : 0.0,
+                'faceSignature' => $signature,
+                'faceCountInFile' => (int) ($fileFaceCounts[$fileId] ?? 1),
+                'matchScore' => $bestScore,
+            ];
+
+            $existing = $buckets[$bestPerson]['filesById'][$fileId] ?? null;
+            if ($existing === null || (float) ($entry['matchScore'] ?? 0.0) > (float) ($existing['matchScore'] ?? 0.0)) {
+                $buckets[$bestPerson]['filesById'][$fileId] = $entry;
+            }
+        }
+
+        $clusters = [];
+        foreach ($buckets as $person => $bucket) {
+            $files = array_values($bucket['filesById']);
+            if ($files === []) {
+                continue;
+            }
+
+            usort(
+                $files,
+                static fn(array $a, array $b): int => ((float) ($b['matchScore'] ?? 0.0) <=> (float) ($a['matchScore'] ?? 0.0))
+                    ?: ((float) ($b['faceConfidence'] ?? 0.0) <=> (float) ($a['faceConfidence'] ?? 0.0))
+                    ?: ((int) ($b['fileSize'] ?? 0) <=> (int) ($a['fileSize'] ?? 0))
+            );
+
+            $total = count($files);
+            $visible = array_slice($files, 0, $filesPerCluster);
+            $referenceSignatures = $bucket['reference_signatures'];
+
+            $clusters[] = [
+                'id' => 'person-' . substr(sha1($person), 0, 12),
+                'name' => $person,
+                'person_key' => $person,
+                'count' => $total,
+                'top_confidence' => (float) ($files[0]['faceConfidence'] ?? 0.0),
+                'label_signature' => $referenceSignatures[0] ?? '',
+                'cluster_signatures' => $referenceSignatures,
+                'files' => $visible,
+                'has_more_files' => $total > count($visible),
+                'next_offset' => count($visible),
+            ];
+        }
+
+        usort($clusters, static fn(array $a, array $b): int => ((float) ($b['top_confidence'] ?? 0.0) <=> (float) ($a['top_confidence'] ?? 0.0)) ?: ((int) ($b['count'] ?? 0) <=> (int) ($a['count'] ?? 0)));
+
+        return $clusters;
+    }
+
+    /**
+     * @param array<int, string> $signatures
+     * @return array{files: array<int, array>, total: int, offset: int, limit: int, has_more: bool, next_offset: int}
+     */
+    public function getPeopleClusterFiles(
+        string $userId,
+        array $signatures,
+        string $scope = self::SCOPE_ALL,
+        int $offset = 0,
+        int $limit = self::PEOPLE_DEFAULT_FILES_PER_CLUSTER,
+    ): array {
+        $scope = $this->normalizeScope($scope);
+        $offset = max(0, $offset);
+        $limit = max(1, min(200, $limit));
+
+        $normalizedSignatures = [];
+        foreach ($signatures as $signature) {
+            $trimmed = trim((string) $signature);
+            if ($trimmed === '') {
+                continue;
+            }
+            $normalizedSignatures[$trimmed] = true;
+        }
+
+        $signatureList = array_keys($normalizedSignatures);
+        if ($signatureList === []) {
+            return [
+                'files' => [],
+                'total' => 0,
+                'offset' => $offset,
+                'limit' => $limit,
+                'has_more' => false,
+                'next_offset' => $offset,
+            ];
+        }
+
+        $records = $this->faceInstanceMapper->findBySignatures($userId, $signatureList, $scope);
+
+        $fileFaceCounts = [];
+        foreach ($records as $record) {
+            $recordFileId = $record->getFileId();
+            $fileFaceCounts[$recordFileId] = ($fileFaceCounts[$recordFileId] ?? 0) + 1;
+        }
+
+        $filesById = [];
+        foreach ($records as $record) {
+            $fileId = $record->getFileId();
+            if (isset($filesById[$fileId])) {
+                continue;
+            }
+
+            $filesById[$fileId] = [
+                'fileId' => $fileId,
+                'filePath' => $record->getFilePath(),
+                'mimeType' => $record->getMimeType(),
+                'fileSize' => $record->getFileSize(),
+                'faceConfidence' => $record->getFaceConfidence() !== null ? (float) $record->getFaceConfidence() : 0.0,
+                'faceSignature' => (string) ($record->getFaceSignature() ?? ''),
+                'faceCountInFile' => (int) ($fileFaceCounts[$fileId] ?? 1),
+            ];
+        }
+
+        $files = array_values($filesById);
+        usort(
+            $files,
+            static fn(array $a, array $b): int => ($b['faceConfidence'] <=> $a['faceConfidence'])
+                ?: ($b['fileSize'] <=> $a['fileSize'])
+                ?: ($a['fileId'] <=> $b['fileId'])
+        );
+
+        $total = count($files);
+        $chunk = array_slice($files, $offset, $limit);
+        $nextOffset = $offset + count($chunk);
 
         return [
-            'clusters' => $normalized,
-            'total_clusters' => count($normalized),
-            'total_face_images' => $faceImages,
+            'files' => $chunk,
+            'total' => $total,
+            'offset' => $offset,
+            'limit' => $limit,
+            'has_more' => $nextOffset < $total,
+            'next_offset' => $nextOffset,
+        ];
+    }
+
+    /**
+     * @return array{files: array<int, array>, total: int, offset: int, limit: int, has_more: bool, next_offset: int}
+     */
+    public function getPeopleClusterFilesByPerson(
+        string $userId,
+        string $person,
+        string $scope = self::SCOPE_ALL,
+        int $offset = 0,
+        int $limit = self::PEOPLE_DEFAULT_FILES_PER_CLUSTER,
+    ): array {
+        $person = trim($person);
+        if ($person === '') {
+            return [
+                'files' => [],
+                'total' => 0,
+                'offset' => max(0, $offset),
+                'limit' => max(1, min(200, $limit)),
+                'has_more' => false,
+                'next_offset' => max(0, $offset),
+            ];
+        }
+
+        $scope = $this->normalizeScope($scope);
+        $offset = max(0, $offset);
+        $limit = max(1, min(200, $limit));
+
+        $instanceRecords = $this->faceInstanceMapper->findWithFace($userId, $scope);
+        if ($instanceRecords === []) {
+            return [
+                'files' => [],
+                'total' => 0,
+                'offset' => $offset,
+                'limit' => $limit,
+                'has_more' => false,
+                'next_offset' => $offset,
+            ];
+        }
+
+        $labelMap = $this->faceSignatureLabelMapper->getLabelMapForUser($userId);
+
+        $fileFaceCounts = [];
+        foreach ($instanceRecords as $record) {
+            $recordSignature = trim((string) ($record->getFaceSignature() ?? ''));
+            if ($recordSignature === '') {
+                continue;
+            }
+
+            $recordFileId = $record->getFileId();
+            $fileFaceCounts[$recordFileId] = ($fileFaceCounts[$recordFileId] ?? 0) + 1;
+        }
+
+        $labelMap = $this->filterLabelMapToSingleFaceReferences($labelMap, $instanceRecords, $fileFaceCounts);
+        $profiles = $this->buildReferenceProfilesFromLabels($labelMap);
+        if (!isset($profiles[$person])) {
+            return [
+                'files' => [],
+                'total' => 0,
+                'offset' => $offset,
+                'limit' => $limit,
+                'has_more' => false,
+                'next_offset' => $offset,
+            ];
+        }
+
+        $clusters = $this->buildReferenceClusters($instanceRecords, [$person => $profiles[$person]], 1000000);
+        if ($clusters === []) {
+            return [
+                'files' => [],
+                'total' => 0,
+                'offset' => $offset,
+                'limit' => $limit,
+                'has_more' => false,
+                'next_offset' => $offset,
+            ];
+        }
+
+        $allFiles = $clusters[0]['files'] ?? [];
+        $total = count($allFiles);
+        $chunk = array_slice($allFiles, $offset, $limit);
+        $nextOffset = $offset + count($chunk);
+
+        return [
+            'files' => $chunk,
+            'total' => $total,
+            'offset' => $offset,
+            'limit' => $limit,
+            'has_more' => $nextOffset < $total,
+            'next_offset' => $nextOffset,
         ];
     }
 
@@ -174,18 +688,17 @@ class PeopleLocationService
                     }
                     $skipped++;
                     $processed++;
-                    if ($processed % 50 === 0 || $processed === $total) {
+                    if ($processed % self::PEOPLE_PROGRESS_WRITE_EVERY === 0 || $processed === $total) {
                         $this->setPeopleProgress($userId, 'scanning', $total, $processed);
                     }
                     continue;
                 }
 
                 $relativePath = $this->getUserRelativePath($userId, $file);
-                $faceData = $this->detectFaceSignature($userId, $file);
-
-                $hasFace = $faceData['has_face'];
-                $signature = $hasFace ? (string) ($faceData['signature'] ?? '') : null;
-                $confidence = $hasFace ? (float) ($faceData['confidence'] ?? 0.0) : null;
+                $faceDataList = $this->detectFaceSignatures($userId, $file);
+                $hasFace = $faceDataList !== [];
+                $signature = $hasFace ? $this->normalizeStoredFaceSignature((string) ($faceDataList[0]['signature'] ?? '')) : null;
+                $confidence = $hasFace ? (float) ($faceDataList[0]['confidence'] ?? 0.0) : null;
 
                 $this->upsertFaceRecord(
                     $userId,
@@ -196,6 +709,16 @@ class PeopleLocationService
                     $hasFace,
                     $signature,
                     $confidence,
+                    $mtime,
+                );
+
+                $this->replaceFaceInstances(
+                    $userId,
+                    $fileId,
+                    $relativePath,
+                    $file->getSize(),
+                    $file->getMimeType(),
+                    $faceDataList,
                     $mtime,
                 );
 
@@ -213,7 +736,7 @@ class PeopleLocationService
             }
 
             $processed++;
-            if ($processed % 50 === 0 || $processed === $total) {
+            if ($processed % self::PEOPLE_PROGRESS_WRITE_EVERY === 0 || $processed === $total) {
                 $this->setPeopleProgress($userId, 'scanning', $total, $processed);
             }
         }
@@ -245,32 +768,21 @@ class PeopleLocationService
      */
     public function getPeopleScanProgress(string $userId): array
     {
-        $raw = $this->config->getUserValue($userId, Application::APP_ID, 'people_scan_progress', '');
-        if ($raw === '') {
-            return [
-                'status' => 'idle',
-                'total' => 0,
-                'processed' => 0,
-                'updated_at' => '',
-            ];
+        $progress = $this->readScanProgress($userId, 'people_scan_progress');
+
+        if ($progress['status'] === 'scanning' && $this->isPeopleScanStale($progress['updated_at'])) {
+            $resolvedStatus = ($progress['total'] > 0 && $progress['processed'] >= $progress['total'])
+                ? 'completed'
+                : 'interrupted';
+
+            $this->setPeopleProgress($userId, $resolvedStatus, $progress['total'], min($progress['processed'], $progress['total']));
+
+            $progress['status'] = $resolvedStatus;
+            $progress['processed'] = min($progress['processed'], $progress['total']);
+            $progress['updated_at'] = (new DateTime())->format(\DateTimeInterface::ATOM);
         }
 
-        $data = json_decode($raw, true);
-        if (!is_array($data)) {
-            return [
-                'status' => 'idle',
-                'total' => 0,
-                'processed' => 0,
-                'updated_at' => '',
-            ];
-        }
-
-        return [
-            'status' => (string) ($data['status'] ?? 'idle'),
-            'total' => (int) ($data['total'] ?? 0),
-            'processed' => (int) ($data['processed'] ?? 0),
-            'updated_at' => (string) ($data['updated_at'] ?? ''),
-        ];
+        return $progress;
     }
 
     /**
@@ -454,46 +966,21 @@ class PeopleLocationService
      */
     public function getLocationScanProgress(string $userId): array
     {
-        $raw = $this->config->getUserValue($userId, Application::APP_ID, 'location_scan_progress', '');
-        if ($raw === '') {
-            return [
-                'status' => 'idle',
-                'total' => 0,
-                'processed' => 0,
-                'updated_at' => '',
-            ];
-        }
-
-        $data = json_decode($raw, true);
-        if (!is_array($data)) {
-            return [
-                'status' => 'idle',
-                'total' => 0,
-                'processed' => 0,
-                'updated_at' => '',
-            ];
-        }
-
-        return [
-            'status' => (string) ($data['status'] ?? 'idle'),
-            'total' => (int) ($data['total'] ?? 0),
-            'processed' => (int) ($data['processed'] ?? 0),
-            'updated_at' => (string) ($data['updated_at'] ?? ''),
-        ];
+        return $this->readScanProgress($userId, 'location_scan_progress');
     }
 
     /**
-     * @return array{has_face: bool, signature?: string, confidence?: float}
+     * @return array<array{signature: string, confidence: float}>
      */
-    public function detectFaceSignature(string $userId, File $file): array
+    public function detectFaceSignatures(string $userId, File $file): array
     {
         if (!function_exists('curl_init')) {
-            return ['has_face' => false];
+            return [];
         }
 
         $mimeType = $file->getMimeType();
         if (!in_array($mimeType, self::FACE_SUPPORTED_MIME_TYPES, true)) {
-            return ['has_face' => false];
+            return [];
         }
 
         $classifyEndpoint = trim($this->config->getAppValue(
@@ -502,7 +989,7 @@ class PeopleLocationService
             'http://photodedup-ml-worker:8008/classify',
         ));
         if ($classifyEndpoint === '') {
-            return ['has_face' => false];
+            return [];
         }
 
         $faceEndpoint = preg_replace('#/classify/?$#', '/face-signature', $classifyEndpoint);
@@ -513,21 +1000,19 @@ class PeopleLocationService
         $timeout = max(2, min(60, (int) $this->config->getAppValue(Application::APP_ID, 'ml_classifier_timeout_seconds', '20')));
         $maxFileBytes = max(512 * 1024, min(100 * 1024 * 1024, (int) $this->config->getAppValue(Application::APP_ID, 'insights_people_max_file_bytes', '52428800')));
         $minFaceConfidence = max(0.0, min(1.0, (float) $this->config->getAppValue(Application::APP_ID, 'insights_people_min_face_confidence', '0.35')));
-        $minFamilyConfidence = max(0.0, min(1.0, (float) $this->config->getAppValue(Application::APP_ID, 'insights_people_min_family_confidence', '0.20')));
-        $requireFamilyCategory = $this->isTruthyAppValue('insights_people_require_family_category', true);
 
         if ($file->getSize() <= 0 || $file->getSize() > $maxFileBytes) {
-            return ['has_face' => false];
+            return [];
         }
 
         $tempFile = tempnam(sys_get_temp_dir(), 'pdd_face_');
         if ($tempFile === false) {
-            return ['has_face' => false];
+            return [];
         }
 
         try {
             if (!$this->copyFileToLocalTemp($file, $tempFile, $maxFileBytes)) {
-                return ['has_face' => false];
+                return [];
             }
 
             $headers = ['Accept: application/json'];
@@ -542,7 +1027,7 @@ class PeopleLocationService
 
             $ch = curl_init($faceEndpoint);
             if ($ch === false) {
-                return ['has_face' => false];
+                return [];
             }
 
             curl_setopt_array($ch, [
@@ -559,48 +1044,85 @@ class PeopleLocationService
             curl_close($ch);
 
             if ($body === false || $statusCode < 200 || $statusCode >= 300) {
-                return ['has_face' => false];
+                return [];
             }
 
             $decoded = json_decode((string) $body, true);
             if (!is_array($decoded) || !isset($decoded['has_face'])) {
-                return ['has_face' => false];
+                return [];
             }
 
             if (!(bool) $decoded['has_face']) {
-                return ['has_face' => false];
+                return [];
             }
 
-            $signature = trim((string) ($decoded['signature'] ?? ''));
-            if ($signature === '') {
-                return ['has_face' => false];
+            $result = [];
+            $decodedFaces = $decoded['faces'] ?? null;
+            if (is_array($decodedFaces)) {
+                foreach ($decodedFaces as $face) {
+                    if (!is_array($face)) {
+                        continue;
+                    }
+
+                    $signature = trim((string) ($face['signature'] ?? ''));
+                    if ($signature === '') {
+                        continue;
+                    }
+
+                    $faceConfidence = (float) ($face['confidence'] ?? 0.0);
+                    if ($faceConfidence < $minFaceConfidence) {
+                        continue;
+                    }
+
+                    $result[] = [
+                        'signature' => $signature,
+                        'confidence' => $faceConfidence,
+                    ];
+                }
             }
 
-            $faceConfidence = (float) ($decoded['confidence'] ?? 0.0);
-            if ($faceConfidence < $minFaceConfidence) {
-                return ['has_face' => false];
+            if ($result === []) {
+                $signature = trim((string) ($decoded['signature'] ?? ''));
+                $faceConfidence = (float) ($decoded['confidence'] ?? 0.0);
+                if ($signature !== '' && $faceConfidence >= $minFaceConfidence) {
+                    $result[] = [
+                        'signature' => $signature,
+                        'confidence' => $faceConfidence,
+                    ];
+                }
             }
 
-            if ($requireFamilyCategory && !$this->isFamilyCategoryImage($tempFile, $mimeType, $classifyEndpoint, $timeout, $minFamilyConfidence, $userId)) {
-                return ['has_face' => false];
-            }
-
-            return [
-                'has_face' => true,
-                'signature' => $signature,
-                'confidence' => $faceConfidence,
-            ];
+            return $result;
         } catch (\Throwable $e) {
             $this->logger->debug('Face signature detection failed', [
                 'file' => $file->getPath(),
                 'exception' => $e,
             ]);
-            return ['has_face' => false];
+            return [];
         } finally {
             if (file_exists($tempFile)) {
                 unlink($tempFile);
             }
         }
+    }
+
+    /**
+     * Compatibility helper for legacy call sites.
+     *
+     * @return array{has_face: bool, signature?: string, confidence?: float}
+     */
+    public function detectFaceSignature(string $userId, File $file): array
+    {
+        $faces = $this->detectFaceSignatures($userId, $file);
+        if ($faces === []) {
+            return ['has_face' => false];
+        }
+
+        return [
+            'has_face' => true,
+            'signature' => (string) ($faces[0]['signature'] ?? ''),
+            'confidence' => (float) ($faces[0]['confidence'] ?? 0.0),
+        ];
     }
 
     private function copyFileToLocalTemp(File $source, string $targetPath, int $maxBytes): bool
@@ -642,101 +1164,71 @@ class PeopleLocationService
         }
     }
 
-    private function findClusterIndex(array $clusters, string $signature): int
+    /**
+     * @return array<float>|null
+     */
+    private function parseEmbeddingSignature(string $signature): ?array
     {
-        foreach ($clusters as $index => $cluster) {
-            if ($this->signatureMatchesCluster($cluster, $signature)) {
-                return $index;
-            }
+        $signature = trim($signature);
+        if (!str_starts_with($signature, self::FACE_EMBEDDING_SIGNATURE_PREFIX)) {
+            return null;
         }
 
-        return -1;
+        $encoded = substr($signature, strlen(self::FACE_EMBEDDING_SIGNATURE_PREFIX));
+        if ($encoded === '') {
+            return null;
+        }
+
+        $padding = (4 - (strlen($encoded) % 4)) % 4;
+        $encodedPadded = strtr($encoded, '-_', '+/') . str_repeat('=', $padding);
+
+        $raw = base64_decode($encodedPadded, true);
+        if ($raw === false || $raw === '') {
+            return null;
+        }
+
+        $bytes = unpack('c*', $raw);
+        if (!is_array($bytes) || $bytes === []) {
+            return null;
+        }
+
+        $vector = [];
+        $normSquared = 0.0;
+        foreach ($bytes as $byte) {
+            $value = ((int) $byte) / 127.0;
+            $vector[] = $value;
+            $normSquared += $value * $value;
+        }
+
+        if ($normSquared <= 0.0) {
+            return null;
+        }
+
+        $norm = sqrt($normSquared);
+        foreach ($vector as $index => $value) {
+            $vector[$index] = $value / $norm;
+        }
+
+        return $vector;
     }
 
-    private function signatureMatchesCluster(array $cluster, string $signature): bool
+    /**
+     * @param array<float> $a
+     * @param array<float> $b
+     */
+    private function cosineSimilarity(array $a, array $b): float
     {
-        $clusterSignatures = $cluster['signatures'] ?? [];
-        if (!is_array($clusterSignatures) || $clusterSignatures === []) {
-            $clusterSignatures = [(string) ($cluster['signature'] ?? '')];
+        $length = count($a);
+        if ($length === 0 || $length !== count($b)) {
+            return -1.0;
         }
 
-        foreach ($clusterSignatures as $clusterSignature) {
-            $distance = $this->hexHammingDistance((string) $clusterSignature, $signature);
-            if ($distance <= self::FACE_CLUSTER_DISTANCE) {
-                return true;
-            }
+        $dot = 0.0;
+        for ($i = 0; $i < $length; $i++) {
+            $dot += $a[$i] * $b[$i];
         }
 
-        return false;
-    }
-
-    private function isFamilyCategoryImage(
-        string $tempFile,
-        string $mimeType,
-        string $classifyEndpoint,
-        int $timeout,
-        float $minFamilyConfidence,
-        string $userId,
-    ): bool {
-        $headers = ['Accept: application/json'];
-        $token = trim($this->config->getAppValue(Application::APP_ID, 'ml_classifier_token', ''));
-        if ($token !== '') {
-            $headers[] = 'Authorization: Bearer ' . $token;
-        }
-
-        $payload = [
-            'file' => new \CURLFile($tempFile, $mimeType, basename($tempFile)),
-            'candidate_labels' => 'document,meme,nature,family,object',
-        ];
-
-        $ch = curl_init($classifyEndpoint);
-        if ($ch === false) {
-            return true;
-        }
-
-        curl_setopt_array($ch, [
-            CURLOPT_POST => true,
-            CURLOPT_HTTPHEADER => $headers,
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_CONNECTTIMEOUT => $timeout,
-            CURLOPT_TIMEOUT => $timeout,
-            CURLOPT_POSTFIELDS => $payload,
-        ]);
-
-        $body = curl_exec($ch);
-        $statusCode = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
-        curl_close($ch);
-
-        if ($body === false || $statusCode < 200 || $statusCode >= 300) {
-            return true;
-        }
-
-        $decoded = json_decode((string) $body, true);
-        if (!is_array($decoded)) {
-            return true;
-        }
-
-        $category = strtolower(trim((string) ($decoded['category'] ?? '')));
-        $confidence = (float) ($decoded['confidence'] ?? 0.0);
-
-        if ($category !== 'family') {
-            $this->logger->debug('Face rejected by family-category check', [
-                'userId' => $userId,
-                'category' => $category,
-                'confidence' => $confidence,
-            ]);
-            return false;
-        }
-
-        return $confidence >= $minFamilyConfidence;
-    }
-
-    private function isTruthyAppValue(string $key, bool $default): bool
-    {
-        $defaultValue = $default ? 'true' : 'false';
-        $rawValue = strtolower(trim($this->config->getAppValue(Application::APP_ID, $key, $defaultValue)));
-
-        return in_array($rawValue, ['1', 'true', 'yes', 'on'], true);
+        return $dot;
     }
 
     private function hexHammingDistance(string $a, string $b): int
@@ -911,6 +1403,62 @@ class PeopleLocationService
     }
 
     /**
+     * Replace all stored face instances for one file with the newly detected set.
+     *
+     * @param array<int, array{signature: string, confidence: float}> $faceDataList
+     */
+    private function replaceFaceInstances(
+        string $userId,
+        int $fileId,
+        string $filePath,
+        int $fileSize,
+        string $mimeType,
+        array $faceDataList,
+        int $fileMtime,
+    ): void {
+        $this->faceInstanceMapper->deleteByFileId($userId, $fileId);
+
+        $index = 1;
+        foreach ($faceDataList as $faceData) {
+            $signature = $this->normalizeStoredFaceSignature((string) ($faceData['signature'] ?? ''));
+            if ($signature === '') {
+                continue;
+            }
+
+            $confidence = isset($faceData['confidence']) ? (float) $faceData['confidence'] : null;
+
+            $entity = new FaceInstance();
+            $entity->setUserId($userId);
+            $entity->setFileId($fileId);
+            $entity->setFilePath($filePath);
+            $entity->setFileSize($fileSize);
+            $entity->setMimeType($mimeType);
+            $entity->setFaceIndex($index);
+            $entity->setFaceSignature($signature);
+            $entity->setFaceConfidence($confidence);
+            $entity->setFileMtime($fileMtime);
+            $entity->setScannedAt(new DateTime());
+
+            $this->faceInstanceMapper->insertFaceInstance($entity);
+            $index++;
+        }
+    }
+
+    private function normalizeStoredFaceSignature(string $signature): string
+    {
+        $trimmed = trim($signature);
+        if ($trimmed === '') {
+            return '';
+        }
+
+        if (strlen($trimmed) <= 191) {
+            return $trimmed;
+        }
+
+        return 'sig:v1:' . hash('sha256', $trimmed);
+    }
+
+    /**
      * Store people-scan progress in user config for frontend polling.
      */
     private function setPeopleProgress(string $userId, string $status, int $total, int $processed): void
@@ -923,6 +1471,55 @@ class PeopleLocationService
         ], JSON_THROW_ON_ERROR);
 
         $this->config->setUserValue($userId, Application::APP_ID, 'people_scan_progress', $data);
+    }
+
+    /**
+     * @return array{status: string, total: int, processed: int, updated_at: string}
+     */
+    private function readScanProgress(string $userId, string $key): array
+    {
+        $raw = $this->config->getUserValue($userId, Application::APP_ID, $key, '');
+        if ($raw === '') {
+            return [
+                'status' => 'idle',
+                'total' => 0,
+                'processed' => 0,
+                'updated_at' => '',
+            ];
+        }
+
+        $data = json_decode($raw, true);
+        if (!is_array($data)) {
+            return [
+                'status' => 'idle',
+                'total' => 0,
+                'processed' => 0,
+                'updated_at' => '',
+            ];
+        }
+
+        return [
+            'status' => (string) ($data['status'] ?? 'idle'),
+            'total' => max(0, (int) ($data['total'] ?? 0)),
+            'processed' => max(0, (int) ($data['processed'] ?? 0)),
+            'updated_at' => (string) ($data['updated_at'] ?? ''),
+        ];
+    }
+
+    private function isPeopleScanStale(string $updatedAt): bool
+    {
+        if ($updatedAt === '') {
+            return true;
+        }
+
+        try {
+            $updated = new \DateTimeImmutable($updatedAt);
+        } catch (\Throwable) {
+            return true;
+        }
+
+        $age = time() - $updated->getTimestamp();
+        return $age > self::PEOPLE_SCAN_STALE_SECONDS;
     }
 
     /**
