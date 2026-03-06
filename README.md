@@ -7,6 +7,8 @@ Photo Organizer helps you clean up large photo libraries in Nextcloud by combini
 
 - **Deduplicator**: finds exact duplicate files by SHA-256 content hash.
 - **Classifier**: groups images into practical categories using a local ML worker (with safe heuristic fallback).
+- **People**: 
+- **Location**:
 
 It is designed to be safe, auditable, and practical for self-hosted environments.
 
@@ -39,6 +41,28 @@ It is designed to be safe, auditable, and practical for self-hosted environments
 - Confidence + indicator metadata per file.
 - Move and delete actions directly from category views.
 - Scope toggle in UI:
+  - **Whole drive**
+  - **Photos folder only** (`Photos/` and `photos/`)
+
+### People function
+
+- Face detection and signature extraction via local ML worker (`/face-signature`).
+- Reference-first person workflow: create person references first, then load matched photos.
+- Single-face reference safety: only photos with exactly one detected face can be used as references.
+- Person labeling and renaming from the People tab.
+- Incremental loading of photos per person cluster.
+- Scope toggle support:
+  - **Whole drive**
+  - **Photos folder only** (`Photos/` and `photos/`)
+
+### Location function
+
+- On-demand EXIF GPS scanning from the Locations tab.
+- Incremental scan behavior (new/changed files only).
+- Database-backed location cache for fast reloads.
+- Progress tracking during location scan.
+- Map markers grouped by proximity.
+- Scope toggle support:
   - **Whole drive**
   - **Photos folder only** (`Photos/` and `photos/`)
 
@@ -76,7 +100,7 @@ It is designed to be safe, auditable, and practical for self-hosted environments
 
 ```bash
 cd /path/to/nextcloud/custom_apps
-git clone https://github.com/johannes/nextcloud-photodedup.git photodedup
+git clone https://github.com/nightsky78/NextcloudPhotoOrganizer.git photodedup
 cd photodedup
 ```
 
@@ -130,12 +154,16 @@ php occ upgrade
    - Click **Classify images**.
    - Review grouped categories.
    - Move or delete selected files.
-4. In **Locations**:
+4. In **People**:
+  - Create person references from clear single-face photos.
+  - Save person labels.
+  - Review grouped photos per person.
+5. In **Locations**:
    - Click **Scan locations** to extract GPS data from EXIF metadata.
    - A progress bar shows scan status.
    - Markers appear on the map, grouped by proximity.
    - Subsequent scans are incremental (only new/changed files are processed).
-5. Use the **scope toggle** in both tabs:
+6. Use the **scope toggle** in all tabs:
    - **Whole drive** for complete view.
    - **Photos folder** for `Photos/`-only workflows.
 
