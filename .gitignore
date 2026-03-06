@@ -1,0 +1,71 @@
+# Build artifacts
+/js/
+/build/
+/dist/
+
+# Dependencies
+/node_modules/
+/vendor/
+
+# IDE / Editor
+/.vscode/
+/.github/
+/.idea/
+/.playwright-mcp/
+*.swp
+*.swo
+.gitigore
+
+# OS / filesystem
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# PHP tooling/cache
+.phpunit.cache/
+.php-cs-fixer.cache
+.php-cs-fixer.php
+
+# Python (ML worker)
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.venv/
+venv/
+ml_worker/.venv/
+
+# Environment / local secrets
+.env
+.env.local
+.env.*.local
+*.env
+
+# Local app/runtime state
+*.pid
+*.sqlite
+*.sqlite3
+
+# Test artifacts
+test-results/
+playwright-report/
+blob-report/
+coverage/
+.nyc_output/
+tmp-*.png
+
+copilot-instructions.md
+config.py

@@ -1,0 +1,10 @@
+/**
+ * SPDX-FileCopyrightText: 2026 Johannes
+ * SPDX-License-Identifier: AGPL-3.0-or-later
+ *
+ * Additional styles for the Photo Deduplicator app.
+ */
+
+#photodedup-content {
+	min-height: 100%;
+}

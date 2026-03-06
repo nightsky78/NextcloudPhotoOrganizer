@@ -1,0 +1,33 @@
+{
+    "name": "johannes/photodedup",
+    "description": "Nextcloud app to find and remove duplicate photos",
+    "type": "project",
+    "license": "AGPL-3.0-or-later",
+    "require": {
+        "php": ">=8.1"
+    },
+    "require-dev": {
+        "nextcloud/ocp": "^28",
+        "phpunit/phpunit": "^10",
+        "psalm/phar": "^5"
+    },
+    "autoload": {
+        "psr-4": {
+            "OCA\\PhotoDedup\\": "lib/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "OCA\\PhotoDedup\\Tests\\": "tests/"
+        }
+    },
+    "scripts": {
+        "test": "phpunit --configuration phpunit.xml",
+        "lint": "php -l lib/ tests/"
+    },
+    "config": {
+        "optimize-autoloader": true,
+        "sort-packages": true,
+        "platform-check": false
+    }
+}
