@@ -14,7 +14,7 @@
 /.playwright-mcp/
 *.swp
 *.swo
-.gitigore
+.gitignore
 
 # OS / filesystem
 .DS_Store
