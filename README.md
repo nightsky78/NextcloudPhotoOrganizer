@@ -345,13 +345,13 @@ Important for containerized Nextcloud: do **not** use `127.0.0.1` unless the wor
 
 ```bash
 # Scan one user
-php occ photodedup:scan johannes
+php occ photodedup:scan sampleuser
 
 # Scan all users
 php occ photodedup:scan --all
 
 # Force rehash
-php occ photodedup:scan --force johannes
+php occ photodedup:scan --force sampleuser
 ```
 
 ### Validation checks
