@@ -44,7 +44,7 @@ export default {
 		description() {
 			return this.hasScanned
 				? 'Your photo library has no exact duplicate files. Great!'
-				: 'Click "Scan for duplicates" to analyze your photo library.'
+				: 'Run the OCC duplicate scan command to analyze your library.'
 		},
 	},
 }

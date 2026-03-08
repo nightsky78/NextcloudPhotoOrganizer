@@ -66,15 +66,6 @@
 								<strong>{{ formatBytes(stats.wasted_bytes) }}</strong> recoverable
 							</span>
 						</div>
-						<NcButton type="primary"
-							:disabled="scanning"
-							@click="startScan">
-							<template #icon>
-								<NcLoadingIcon v-if="scanning" :size="20" />
-								<MagnifyIcon v-else :size="20" />
-							</template>
-							{{ scanning ? 'Scanning…' : 'Scan for duplicates' }}
-						</NcButton>
 					</div>
 				</div>
 
@@ -162,7 +153,6 @@ import {
 	fetchDuplicates,
 	fetchStats,
 	fetchScanStatus,
-	triggerScan,
 	deleteFile,
 	bulkDeleteFiles,
 } from './services/api.js'
@@ -241,10 +231,10 @@ export default {
 
 				const statusData = statusResult.status === 'fulfilled' ? statusResult.value : { status: 'unknown' }
 				this.scanProgress = statusData
+				this.scanning = statusData.status === 'scanning'
 				this.hasScanned = statusData.status === 'completed' || this.totalGroups > 0
 
-				if (statusData.status === 'scanning') {
-					this.scanning = true
+				if (this.scanning) {
 					this.startPolling()
 				}
 			} catch (err) {
@@ -260,27 +250,6 @@ export default {
 				this.groups.push(...data.groups)
 			} catch (err) {
 				console.error('PhotoDedup: failed to load more groups', err)
-			}
-		},
-
-		async startScan() {
-			this.scanning = true
-			this.scanProgress = { status: 'scanning', total: 0, processed: 0 }
-			this.startPolling()
-
-			try {
-				await triggerScan(false)
-			} catch (err) {
-				if (err.response && err.response.status === 409) {
-					// Already scanning — just poll
-				} else {
-					console.error('PhotoDedup: scan failed', err)
-				}
-			} finally {
-				this.scanning = false
-				this.hasScanned = true
-				this.stopPolling()
-				await this.loadInitialData()
 			}
 		},
 

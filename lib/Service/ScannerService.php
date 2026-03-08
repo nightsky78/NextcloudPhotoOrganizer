@@ -17,10 +17,10 @@ use OCP\IConfig;
 use Psr\Log\LoggerInterface;
 
 /**
- * Scans a user's file tree for image files and computes content hashes.
+ * Scans a user's file tree for files and computes content hashes.
  *
  * The scanner operates in two phases:
- *   1. Discover — recursively walk the user's root folder collecting image files.
+ *   1. Discover — recursively walk the user's root folder collecting files.
  *   2. Hash    — for each discovered file, compute SHA-256 if not already indexed
  *                or if the file has changed since last scan.
  *
@@ -63,10 +63,10 @@ class ScannerService
             return ['total' => 0, 'hashed' => 0, 'skipped' => 0, 'errors' => 1];
         }
 
-        // Phase 1: Discover image files
-        $imageFiles = [];
-        $this->collectImageFiles($userFolder, $imageFiles);
-        $total = count($imageFiles);
+        // Phase 1: Discover files
+        $files = [];
+        $this->collectScannableFiles($userFolder, $files);
+        $total = count($files);
 
         $this->setProgress($userId, 'scanning', $total, 0);
 
@@ -76,7 +76,7 @@ class ScannerService
         $errors = 0;
         $processed = 0;
 
-        foreach ($imageFiles as $file) {
+        foreach ($files as $file) {
             try {
                 $wasHashed = $this->processFile($userId, $file, $forceRehash);
                 if ($wasHashed) {
@@ -195,11 +195,11 @@ class ScannerService
     // ── Internal helpers ────────────────────────────────────────────
 
     /**
-     * Recursively collect all image files from a folder.
+     * Recursively collect all files from a folder.
      *
      * @param File[] &$result Accumulator passed by reference.
      */
-    private function collectImageFiles(Folder $folder, array &$result): void
+    private function collectScannableFiles(Folder $folder, array &$result): void
     {
         try {
             $nodes = $folder->getDirectoryListing();
@@ -218,22 +218,11 @@ class ScannerService
                 if ($name === '.thumbnails' || $name === '.versions' || $name === '.trash') {
                     continue;
                 }
-                $this->collectImageFiles($node, $result);
+                $this->collectScannableFiles($node, $result);
             } elseif ($node instanceof File) {
-                if ($this->isImageFile($node)) {
-                    $result[] = $node;
-                }
+                $result[] = $node;
             }
         }
-    }
-
-    /**
-     * Determine whether a node is a supported image file.
-     */
-    private function isImageFile(File $file): bool
-    {
-        $mime = $file->getMimeType();
-        return in_array($mime, Application::SUPPORTED_MIME_TYPES, true);
     }
 
     /**

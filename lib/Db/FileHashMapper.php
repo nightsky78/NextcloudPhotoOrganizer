@@ -68,7 +68,8 @@ class FileHashMapper extends QBMapper
         $qb->groupBy('content_hash')
             ->groupBy('content_hash')
             ->having($qb->expr()->gt($qb->func()->count('id'), $qb->createNamedParameter(1, IQueryBuilder::PARAM_INT)))
-            ->orderBy('count', 'DESC')
+            ->orderBy('total_size', 'DESC')
+            ->addOrderBy('count', 'DESC')
             ->setFirstResult($offset)
             ->setMaxResults($limit);
 

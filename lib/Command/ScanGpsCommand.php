@@ -16,13 +16,9 @@ use Symfony\Component\Console\Input\InputOption;
 use Symfony\Component\Console\Output\OutputInterface;
 
 /**
- * OCC command: occ photodedup:scan-people [--force] [--all] [userId]
- *
- * Scans image files for face signatures using the ML worker and stores
- * the results in the database. Designed for background execution via
- * cron job or systemd service.
+ * OCC command: occ photodedup:scan-gps [--force] [--all] [userId]
  */
-class ScanPeopleCommand extends Command
+class ScanGpsCommand extends Command
 {
     public function __construct(
         private readonly PeopleLocationService $peopleLocationService,
@@ -34,9 +30,8 @@ class ScanPeopleCommand extends Command
     protected function configure(): void
     {
         $this
-            ->setName('photodedup:scan-people')
-            ->setAliases(['photodedup:scan-faces'])
-            ->setDescription('Scan image files for face signatures (people detection)')
+            ->setName('photodedup:scan-gps')
+            ->setDescription('Scan image files for GPS extraction')
             ->addArgument(
                 'userId',
                 InputArgument::OPTIONAL,
@@ -52,7 +47,7 @@ class ScanPeopleCommand extends Command
                 'force',
                 'f',
                 InputOption::VALUE_NONE,
-                'Re-scan all files even if unchanged since last scan',
+                'Re-extract GPS data even if unchanged since last scan',
             );
     }
 
@@ -76,7 +71,6 @@ class ScanPeopleCommand extends Command
             return $this->scanAllUsers($output, $force);
         }
 
-        // Validate user exists
         if (!is_string($userId) || !$this->userManager->userExists($userId)) {
             $output->writeln("<error>User '{$userId}' does not exist.</error>");
             return Command::FAILURE;
@@ -87,16 +81,16 @@ class ScanPeopleCommand extends Command
 
     private function scanSingleUser(OutputInterface $output, string $userId, bool $force): int
     {
-        $output->writeln("Scanning people for user <info>{$userId}</info>...");
+        $output->writeln("Scanning GPS metadata for user <info>{$userId}</info>...");
 
-        $result = $this->peopleLocationService->scanPeopleData($userId, $force);
+        $result = $this->peopleLocationService->scanLocationData($userId, $force);
 
         $output->writeln(sprintf(
-            '  Total: %d | Scanned: %d | Skipped: %d | With face: %d | Errors: %d',
+            '  Total: %d | Scanned: %d | Skipped: %d | With location: %d | Errors: %d',
             $result['total'],
             $result['scanned'],
             $result['skipped'],
-            $result['with_face'],
+            $result['with_location'],
             $result['errors'],
         ));
 

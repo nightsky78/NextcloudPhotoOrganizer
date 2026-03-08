@@ -2,6 +2,27 @@
 
 All notable changes to the **Photo Deduplicator** Nextcloud app are documented here.
 
+## [1.6.0] — 2026-03-08
+
+### Added
+
+- Added new OCC scan commands for classification and GPS extraction:
+  - `occ photodedup:scan-classification`
+  - `occ photodedup:scan-gps`
+- Added explicit OCC aliases for existing scans:
+  - `occ photodedup:scan-duplicates` (alias of `occ photodedup:scan`)
+  - `occ photodedup:scan-faces` (alias of `occ photodedup:scan-people`)
+
+### Changed
+
+- Duplicate scan now indexes all file types, not only images.
+- Duplicate group ordering is now based on occupied disk volume (`total_size`) to prioritize the largest savings first.
+- Removed manual scan triggers from the GUI for duplicates, classification, and locations. Scans are now command-driven via OCC.
+
+### Fixed
+
+- Updated README operation and quick-start guidance to match the command-driven scan workflow.
+
 ## [1.5.0] — 2026-03-06
 
 ### Added

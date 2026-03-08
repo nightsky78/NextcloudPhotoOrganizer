@@ -7,7 +7,7 @@ declare(strict_types=1);
 
 namespace OCA\PhotoDedup\Command;
 
-use OCA\PhotoDedup\Service\PeopleLocationService;
+use OCA\PhotoDedup\Service\ClassifierService;
 use OCP\IUserManager;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Input\InputArgument;
@@ -16,16 +16,12 @@ use Symfony\Component\Console\Input\InputOption;
 use Symfony\Component\Console\Output\OutputInterface;
 
 /**
- * OCC command: occ photodedup:scan-people [--force] [--all] [userId]
- *
- * Scans image files for face signatures using the ML worker and stores
- * the results in the database. Designed for background execution via
- * cron job or systemd service.
+ * OCC command: occ photodedup:scan-classification [--force] [--all] [userId]
  */
-class ScanPeopleCommand extends Command
+class ScanClassificationCommand extends Command
 {
     public function __construct(
-        private readonly PeopleLocationService $peopleLocationService,
+        private readonly ClassifierService $classifierService,
         private readonly IUserManager $userManager,
     ) {
         parent::__construct();
@@ -34,9 +30,8 @@ class ScanPeopleCommand extends Command
     protected function configure(): void
     {
         $this
-            ->setName('photodedup:scan-people')
-            ->setAliases(['photodedup:scan-faces'])
-            ->setDescription('Scan image files for face signatures (people detection)')
+            ->setName('photodedup:scan-classification')
+            ->setDescription('Scan image files for classification')
             ->addArgument(
                 'userId',
                 InputArgument::OPTIONAL,
@@ -52,7 +47,7 @@ class ScanPeopleCommand extends Command
                 'force',
                 'f',
                 InputOption::VALUE_NONE,
-                'Re-scan all files even if unchanged since last scan',
+                'Re-classify all files even if unchanged since last scan',
             );
     }
 
@@ -76,7 +71,6 @@ class ScanPeopleCommand extends Command
             return $this->scanAllUsers($output, $force);
         }
 
-        // Validate user exists
         if (!is_string($userId) || !$this->userManager->userExists($userId)) {
             $output->writeln("<error>User '{$userId}' does not exist.</error>");
             return Command::FAILURE;
@@ -87,16 +81,15 @@ class ScanPeopleCommand extends Command
 
     private function scanSingleUser(OutputInterface $output, string $userId, bool $force): int
     {
-        $output->writeln("Scanning people for user <info>{$userId}</info>...");
+        $output->writeln("Scanning classification for user <info>{$userId}</info>...");
 
-        $result = $this->peopleLocationService->scanPeopleData($userId, $force);
+        $result = $this->classifierService->classifyUser($userId, $force);
 
         $output->writeln(sprintf(
-            '  Total: %d | Scanned: %d | Skipped: %d | With face: %d | Errors: %d',
+            '  Total: %d | Classified: %d | Skipped: %d | Errors: %d',
             $result['total'],
-            $result['scanned'],
+            $result['classified'],
             $result['skipped'],
-            $result['with_face'],
             $result['errors'],
         ));
 

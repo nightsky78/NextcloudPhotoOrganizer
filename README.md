@@ -1,9 +1,9 @@
 # Photo Organizer for Nextcloud
 
-> Version **1.5.0**  
+> Version **1.6.0**  
 > Duplicate detection + local AI-powered image classification + location insights
 
-Photo Organizer helps you clean up large photo libraries in Nextcloud by combining two workflows:
+Photo Organizer helps you clean up large libraries in Nextcloud by combining two workflows:
 
 - **Deduplicator**: finds exact duplicate files by SHA-256 content hash.
 - **Classifier**: groups images into practical categories using a local ML worker (with safe heuristic fallback).
@@ -27,7 +27,7 @@ It is designed to be safe, auditable, and practical for self-hosted environments
 
 ### Deduplicator function
 
-- Content-based duplicate detection (SHA-256).
+- Content-based duplicate detection (SHA-256) across all files.
 - Streaming hash computation (8 MiB chunks) for stable memory usage.
 - Keep-one and bulk delete workflows.
 - Last-copy protection.
@@ -57,7 +57,7 @@ It is designed to be safe, auditable, and practical for self-hosted environments
 
 ### Location function
 
-- On-demand EXIF GPS scanning from the Locations tab.
+- On-demand EXIF GPS scanning via OCC command.
 - Incremental scan behavior (new/changed files only).
 - Database-backed location cache for fast reloads.
 - Progress tracking during location scan.
@@ -148,18 +148,19 @@ php occ upgrade
 
 1. Open **Photo Organizer** from the Nextcloud navigation.
 2. In **Deduplicator**:
-   - Click **Scan for duplicates**.
+  - Run `php occ photodedup:scan-duplicates <userId>` (or `php occ photodedup:scan <userId>`).
    - Review groups and delete unwanted copies.
 3. In **Classifier**:
-   - Click **Classify images**.
+  - Run `php occ photodedup:scan-classification <userId>`.
    - Review grouped categories.
    - Move or delete selected files.
 4. In **People**:
+  - Run `php occ photodedup:scan-faces <userId>` (or `php occ photodedup:scan-people <userId>`).
   - Create person references from clear single-face photos.
   - Save person labels.
   - Review grouped photos per person.
 5. In **Locations**:
-   - Click **Scan locations** to extract GPS data from EXIF metadata.
+  - Run `php occ photodedup:scan-gps <userId>` to extract GPS data from EXIF metadata.
    - A progress bar shows scan status.
    - Markers appear on the map, grouped by proximity.
    - Subsequent scans are incremental (only new/changed files are processed).
@@ -344,14 +345,29 @@ Important for containerized Nextcloud: do **not** use `127.0.0.1` unless the wor
 ### CLI commands
 
 ```bash
-# Scan one user
+# Duplicate scan (all file types) for one user
+php occ photodedup:scan-duplicates sampleuser
+
+# Duplicate scan alias (backward compatible)
 php occ photodedup:scan sampleuser
 
-# Scan all users
+# Duplicate scan for all users
 php occ photodedup:scan --all
 
-# Force rehash
+# Duplicate scan with forced rehash
 php occ photodedup:scan --force sampleuser
+
+# Image classification scan
+php occ photodedup:scan-classification sampleuser
+
+# Face-signature scan for People insights
+php occ photodedup:scan-faces sampleuser
+
+# Face-signature scan alias
+php occ photodedup:scan-people sampleuser
+
+# GPS extraction scan for Locations insights
+php occ photodedup:scan-gps sampleuser
 ```
 
 ### Validation checks

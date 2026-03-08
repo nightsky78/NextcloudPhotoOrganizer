@@ -31,7 +31,8 @@ class ScanCommand extends Command
     {
         $this
             ->setName('photodedup:scan')
-            ->setDescription('Scan image files for duplicates')
+            ->setAliases(['photodedup:scan-duplicates'])
+            ->setDescription('Scan files for duplicate detection')
             ->addArgument(
                 'userId',
                 InputArgument::OPTIONAL,

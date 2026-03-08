@@ -35,33 +35,28 @@ test.describe('PhotoDedup E2E', () => {
 		await expect(page.getByRole('heading', { name: 'Photo Deduplicator' })).toBeVisible()
 	})
 
-	test('duplicates tab shows scope controls and scan action', async ({ page }) => {
+	test('duplicates tab shows scope controls', async ({ page }) => {
 		await expect(page.getByRole('button', { name: 'Whole drive' })).toBeVisible()
 		await expect(page.getByRole('button', { name: 'Photos folder' })).toBeVisible()
-		await expect(page.getByRole('button', { name: 'Scan for duplicates' })).toBeVisible()
 
 		await page.getByRole('button', { name: 'Photos folder' }).click()
 		await expect(page.getByRole('heading', { name: 'Photo Deduplicator' })).toBeVisible()
-		await expect(page.getByRole('button', { name: 'Scan for duplicates' })).toBeVisible()
 
 		await page.getByRole('button', { name: 'Whole drive' }).click()
-		await expect(page.getByRole('button', { name: 'Scan for duplicates' })).toBeVisible()
+		await expect(page.getByRole('heading', { name: 'Photo Deduplicator' })).toBeVisible()
 	})
 
 	test('classifier tab supports scope switching', async ({ page }) => {
 		await page.getByRole('button', { name: 'Classifier', exact: true }).click()
 		await expect(page.getByRole('heading', { name: 'Image Classifier' })).toBeVisible()
-		await expect(page.getByRole('button', { name: 'Classify images' })).toBeVisible()
 		await expect(page.getByRole('button', { name: 'Whole drive' })).toBeVisible()
 		await expect(page.getByRole('button', { name: 'Photos folder' })).toBeVisible()
 
 		await page.getByRole('button', { name: 'Photos folder' }).click()
 		await expect(page.getByRole('heading', { name: 'Image Classifier' })).toBeVisible()
-		await expect(page.getByRole('button', { name: 'Classify images' })).toBeVisible()
 
 		await page.getByRole('button', { name: 'Whole drive' }).click()
 		await expect(page.getByRole('heading', { name: 'Image Classifier' })).toBeVisible()
-		await expect(page.getByRole('button', { name: 'Classify images' })).toBeVisible()
 	})
 
 	test('people tab supports scope switching', async ({ page }) => {

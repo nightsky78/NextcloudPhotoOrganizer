@@ -25,15 +25,6 @@ Photos folder
 <span><strong>{{ totalPhotosWithLocation }}</strong> geotagged photos</span>
 <span><strong>{{ markers.length }}</strong> markers</span>
 </div>
-<NcButton type="primary"
-:disabled="scanning"
-@click="startScan">
-<template #icon>
-<NcLoadingIcon v-if="scanning" :size="20" />
-<MapSearchIcon v-else :size="20" />
-</template>
-{{ scanning ? 'Scanning…' : 'Scan locations' }}
-</NcButton>
 </div>
 </div>
 
@@ -51,7 +42,7 @@ Photos folder
 <div v-if="!loading && !scanning && markers.length === 0" class="locations__empty">
 <div class="locations__empty-icon">📍</div>
 <h3>No geotagged photos found</h3>
-<p>Click <strong>Scan locations</strong> to extract GPS data from your photos.</p>
+<p>Run the OCC GPS extraction command to extract location data from your files.</p>
 <p>This only needs to be done once — new photos are scanned incrementally.</p>
 </div>
 
@@ -84,9 +75,7 @@ loading="lazy">
 </template>
 
 <script>
-import NcButton from '@nextcloud/vue/dist/Components/NcButton.js'
 import NcLoadingIcon from '@nextcloud/vue/dist/Components/NcLoadingIcon.js'
-import MapSearchIcon from 'vue-material-design-icons/MapSearch.vue'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
 
@@ -94,7 +83,6 @@ import ScanProgress from './ScanProgress.vue'
 
 import {
 fetchLocationMarkers,
-triggerLocationScan,
 fetchLocationScanStatus,
 previewUrl,
 } from '../services/api.js'
@@ -116,9 +104,7 @@ export default {
 name: 'LocationsView',
 
 components: {
-NcButton,
 NcLoadingIcon,
-MapSearchIcon,
 ScanProgress,
 },
 
@@ -165,6 +151,10 @@ return `${this.selectedMarker.count} photo(s) at marker`
 },
 
 async mounted() {
+await this.checkScanStatus()
+if (this.scanning) {
+this.startPolling()
+}
 await this.loadMarkers()
 },
 
@@ -228,43 +218,14 @@ this.mapContainerEl = null
 }
 },
 
-/**
- * Trigger location scan and start progress polling.
- */
-async startScan() {
-if (this.scanning) {
-return
-}
-this.scanning = true
-this.scanProgress = { status: 'scanning', total: 0, processed: 0 }
-
+async checkScanStatus() {
 try {
-// Fire-and-forget: the POST call will block until the scan finishes,
-// but we poll status in parallel to show progress.
-const scanPromise = triggerLocationScan(false)
-this.startPolling()
-
-const result = await scanPromise
-this.stopPolling()
-
-// Final progress update
-this.scanProgress = {
-status: 'completed',
-total: result.total || 0,
-processed: result.total || 0,
-}
+const status = await fetchLocationScanStatus()
+this.scanProgress = status
+this.scanning = status.status === 'scanning'
 } catch (err) {
-this.stopPolling()
-// 409 = already in progress; not an error for the user
-if (err?.response?.status === 409) {
-this.startPolling()
-return
-}
-console.error('PhotoDedup: location scan failed', err)
-} finally {
+this.scanProgress = { status: 'idle', total: 0, processed: 0 }
 this.scanning = false
-// Reload markers from DB (now populated)
-await this.loadMarkers()
 }
 },
 
@@ -274,9 +235,11 @@ this.pollTimer = setInterval(async () => {
 try {
 const status = await fetchLocationScanStatus()
 this.scanProgress = status
+this.scanning = status.status === 'scanning'
 
 if (status.status === 'completed' || status.status === 'error' || status.status === 'idle') {
 this.stopPolling()
+await this.loadMarkers()
 }
 } catch (err) {
 console.error('PhotoDedup: failed to poll location scan status', err)

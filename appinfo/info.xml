@@ -35,15 +35,15 @@ automatically classifies images into categories for easier management.
 Deleted files are moved to the Nextcloud trash bin (if enabled), so recovery is
 possible.
     ]]></description>
-    <version>1.5.0</version>
+    <version>1.6.0</version>
     <licence>agpl</licence>
     <author mail="johannes@example.com">Johannes</author>
     <namespace>PhotoDedup</namespace>
     <category>files</category>
     <category>multimedia</category>
 
-    <bugs>https://github.com/johannes/nextcloud-photodedup/issues</bugs>
-    <repository type="git">https://github.com/johannes/nextcloud-photodedup</repository>
+    <bugs>https://github.com/nightsky78/NextcloudPhotoOrganizer/issues</bugs>
+    <repository type="git">https://github.com/nightsky78/NextcloudPhotoOrganizer</repository>
 
     <dependencies>
         <nextcloud min-version="28" max-version="32" />
@@ -57,6 +57,8 @@ possible.
 
     <commands>
         <command>OCA\PhotoDedup\Command\ScanCommand</command>
+        <command>OCA\PhotoDedup\Command\ScanClassificationCommand</command>
+        <command>OCA\PhotoDedup\Command\ScanGpsCommand</command>
         <command>OCA\PhotoDedup\Command\ScanPeopleCommand</command>
     </commands>
 

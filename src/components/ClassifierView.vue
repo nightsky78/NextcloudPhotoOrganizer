@@ -12,15 +12,13 @@
 			<h2>Image Classifier</h2>
 			<div class="classifier__header-actions">
 				<div class="classifier__scope-toggle">
-					<button
-						type="button"
+					<button type="button"
 						class="classifier__scope-btn"
 						:class="{ 'classifier__scope-btn--active': localScope === 'all' }"
 						@click="setScope('all')">
 						Whole drive
 					</button>
-					<button
-						type="button"
+					<button type="button"
 						class="classifier__scope-btn"
 						:class="{ 'classifier__scope-btn--active': localScope === 'photos' }"
 						@click="setScope('photos')">
@@ -32,15 +30,6 @@
 						<strong>{{ totalClassified }}</strong> images classified
 					</span>
 				</div>
-				<NcButton type="primary"
-					:disabled="classifying"
-					@click="startClassify">
-					<template #icon>
-						<NcLoadingIcon v-if="classifying" :size="20" />
-						<TagMultipleIcon v-else :size="20" />
-					</template>
-					{{ classifying ? 'Classifying…' : 'Classify images' }}
-				</NcButton>
 			</div>
 		</div>
 
@@ -112,7 +101,7 @@
 			<div class="classifier__empty-icon">🏷️</div>
 			<h3>No images classified yet</h3>
 			<p>
-				Click <strong>Classify images</strong> to automatically sort your photos
+				Run the OCC classification command to automatically sort your photos
 				into categories like documents, memes, nature, family photos, and more.
 			</p>
 		</div>
@@ -128,13 +117,11 @@
 <script>
 import NcButton from '@nextcloud/vue/dist/Components/NcButton.js'
 import NcLoadingIcon from '@nextcloud/vue/dist/Components/NcLoadingIcon.js'
-import TagMultipleIcon from 'vue-material-design-icons/TagMultiple.vue'
 
 import ClassifiedGroup from './ClassifiedGroup.vue'
 import ScanProgress from './ScanProgress.vue'
 
 import {
-	triggerClassify,
 	fetchClassifyStatus,
 	fetchCategories,
 	fetchCategoryFiles,
@@ -159,7 +146,6 @@ export default {
 	components: {
 		NcButton,
 		NcLoadingIcon,
-		TagMultipleIcon,
 		ClassifiedGroup,
 		ScanProgress,
 	},
@@ -260,8 +246,8 @@ export default {
 
 				if (statusResult.status === 'fulfilled') {
 					this.classifyProgress = statusResult.value
-					if (statusResult.value.status === 'classifying') {
-						this.classifying = true
+					this.classifying = statusResult.value.status === 'classifying'
+					if (this.classifying) {
 						this.startPolling()
 					}
 				}
@@ -287,26 +273,6 @@ export default {
 				console.error('PhotoDedup: failed to load classifier data', err)
 			} finally {
 				this.loading = false
-			}
-		},
-
-		async startClassify() {
-			this.classifying = true
-			this.classifyProgress = { status: 'classifying', total: 0, processed: 0 }
-			this.startPolling()
-
-			try {
-				await triggerClassify(true)
-			} catch (err) {
-				if (err.response && err.response.status === 409) {
-					// Already classifying — just poll
-				} else {
-					console.error('PhotoDedup: classify failed', err)
-				}
-			} finally {
-				this.classifying = false
-				this.stopPolling()
-				await this.loadInitialData()
 			}
 		},
 
